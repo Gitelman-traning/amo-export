@@ -1,0 +1,29 @@
+name: Публикация отчётов в Telegram
+
+on:
+  schedule:
+    # 19:20 UTC = 22:20 МСК, ежедневно
+    - cron: '20 19 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Только проверка, без реальной отправки (true/false)'
+        required: false
+        default: 'false'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python tg_report.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
+          DRY_RUN: ${{ inputs.dry_run }}
