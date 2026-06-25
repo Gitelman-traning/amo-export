@@ -1,9 +1,10 @@
 name: Публикация отчётов в Telegram
 
 on:
-  schedule:
-    # 19:20 UTC = 22:20 МСК, ежедневно
-    - cron: '20 19 * * *'
+  # Запускается СРАЗУ ПОСЛЕ успешного завершения выгрузки amoCRM
+  workflow_run:
+    workflows: ["amoCRM → Google Sheets (выгрузка авто)"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -15,6 +16,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # При запуске по цепочке — только если выгрузка amoCRM прошла успешно.
+    # При ручном запуске (workflow_dispatch) — всегда.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
