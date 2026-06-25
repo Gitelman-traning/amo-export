@@ -66,6 +66,10 @@ if AMO_TOKEN[:7].lower() == "bearer ":
     AMO_TOKEN = AMO_TOKEN[7:].strip()
 GOOGLE_SA_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 
+# Телеграм-уведомления (необязательно). Если не заданы — отбивка просто пропускается.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
 
 # ============================================================
 #  Справочники соответствия кастомных полей amoCRM → колонки таблицы
@@ -363,6 +367,33 @@ def amo_fetch_all(path, params, embed_key):
 #  Google Sheets
 # ============================================================
 
+def send_telegram(text):
+    """Шлёт сообщение в Telegram. Если секреты не заданы — тихо пропускает."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram-отбивка пропущена (нет TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).")
+        return
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_web_page_preview": True},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"Telegram не отправлен ({r.status_code}): {r.text[:200]}")
+    except Exception as ex:
+        print(f"Telegram ошибка: {ex}")
+
+
+def run_url_line():
+    """Ссылка на лог прогона в GitHub Actions (если запущено там)."""
+    server = os.environ.get("GITHUB_SERVER_URL", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    if server and repo and run_id:
+        return f"\nЛог: {server}/{repo}/actions/runs/{run_id}"
+    return ""
+
+
 def sheets_values():
     info = json.loads(GOOGLE_SA_JSON)
     creds = Credentials.from_service_account_info(
@@ -604,6 +635,12 @@ def main():
                       body={'values': [[date_to_text]]}).execute()
 
     print(f"ГОТОВО. Записано строк: {len(matrix)} (с {DATA_START_ROW}-й строки).")
+    return {
+        'rows': len(matrix),
+        'leads': len(leads),
+        'contacts': len(contact_map),
+        'period': f"{date_from_dt:%d.%m.%Y} — {date_to_dt:%d.%m.%Y}",
+    }
 
 
 def _cell(v):
@@ -613,4 +650,19 @@ def _cell(v):
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        s = main()
+        send_telegram(
+            "✅ amoCRM → Google Sheets: выгрузка выполнена\n"
+            f"Период: {s['period']}\n"
+            f"Сделок: {s['leads']}, контактов: {s['contacts']}\n"
+            f"Записано строк: {s['rows']}"
+            + run_url_line()
+        )
+    except Exception as e:
+        send_telegram(
+            "❌ amoCRM → Google Sheets: ВЫГРУЗКА УПАЛА\n"
+            f"Ошибка: {type(e).__name__}: {str(e)[:300]}"
+            + run_url_line()
+        )
+        raise
