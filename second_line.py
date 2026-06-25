@@ -32,7 +32,11 @@ from googleapiclient.discovery import build
 
 AMO_BASE_URL = "https://pavelgitelman.amocrm.ru"
 
-CONTACTS_SINCE = "2026-01-01"     # целевые контакты, созданные с этой даты (МСК)
+# Год выгрузки: контакты ограничиваются этим годом, листы называются «Контакты <год>»/«Сделки <год>».
+# По умолчанию 2026 (ежедневный прогон). Для разовой догрузки прошлого года запусти
+# workflow вручную с параметром year=2025 (или задай переменную окружения YEAR).
+YEAR = os.environ.get("YEAR", "").strip() or "2026"
+
 FIRST_LINE = 8733326              # воронка «Первая линия» (обязательна у контакта)
 WANT_PIPELINES = {8733326, 9701010}   # какие сделки попадают в колонки «Сделка 1..10»
 OBOROT_GT = 50                   # порог по обороту
@@ -40,8 +44,8 @@ STAFF_GT = 5                     # порог по кол-ву сотрудни�
 
 # Таблица 2-й линии (отдельная, НЕ месячная). Дайте сервис-аккаунту доступ Редактора!
 SECOND_LINE_SHEET_ID = "1_cI3G94UuGEDoHK58xSCX8Gb5UQSRB78SKVo9f321KY"
-SHEET_CONTACTS = "контакты второй линии"
-SHEET_DEALS = "сделки второй линии"
+SHEET_CONTACTS = f"Контакты {YEAR}"
+SHEET_DEALS = f"Сделки {YEAR}"
 
 TIMEZONE = "Europe/Moscow"
 MSK = ZoneInfo(TIMEZONE)
@@ -55,7 +59,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 
-CONTACTS_FROM_TS = int(datetime.strptime(CONTACTS_SINCE, "%Y-%m-%d").replace(tzinfo=MSK).timestamp())
+CONTACTS_FROM_TS = int(datetime(int(YEAR), 1, 1, 0, 0, 0, tzinfo=MSK).timestamp())
+CONTACTS_TO_TS = int(datetime(int(YEAR), 12, 31, 23, 59, 59, tzinfo=MSK).timestamp())
 
 # Апостроф в названии поля WhatsApp
 _APO = chr(39)
@@ -199,6 +204,7 @@ def fetch_contacts():
         data = amo_get('/api/v4/contacts', {
             'limit': 250, 'page': page, 'with': 'leads',
             'filter[created_at][from]': CONTACTS_FROM_TS,
+            'filter[created_at][to]': CONTACTS_TO_TS,
         })
         cs = (data.get('_embedded') or {}).get('contacts') or []
         if not cs:
@@ -273,7 +279,8 @@ def build_contact_rows(contacts):
         if c['id'] in seen:
             continue
         seen.add(c['id'])
-        if int(c.get('created_at') or 0) < CONTACTS_FROM_TS:
+        cat = int(c.get('created_at') or 0)
+        if cat < CONTACTS_FROM_TS or cat > CONTACTS_TO_TS:
             continue
         oborot = cf_by_name(c, 'Оборот')
         kolvo = cf_by_name(c, 'кол-во сотрудников')
@@ -419,14 +426,27 @@ def build_deal_rows(contact_rows, users, pipelines):
 #  Google Sheets
 # ============================================================
 
-def sheets_values():
+def sheets_service():
     info = json.loads(GOOGLE_SA_JSON)
     creds = Credentials.from_service_account_info(
         info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
-    return build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets().values()
+    return build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets()
 
 
-def write_sheet(values, sheet_name, columns, rows):
+def ensure_sheet(svc, title):
+    """Создаёт лист, если его ещё нет."""
+    meta = svc.get(spreadsheetId=SECOND_LINE_SHEET_ID, fields='sheets.properties.title').execute()
+    titles = [s['properties']['title'] for s in meta.get('sheets', [])]
+    if title not in titles:
+        svc.batchUpdate(
+            spreadsheetId=SECOND_LINE_SHEET_ID,
+            body={'requests': [{'addSheet': {'properties': {'title': title}}}]},
+        ).execute()
+        print(f"Создал лист «{title}»")
+
+
+def write_sheet(svc, sheet_name, columns, rows):
+    values = svc.values()
     values.clear(spreadsheetId=SECOND_LINE_SHEET_ID, range=f"'{sheet_name}'").execute()
     matrix = [columns] + [[r.get(c, '') for c in columns] for r in rows]
     values.update(
@@ -444,7 +464,7 @@ def main():
         print("ОШИБКА: нет переменных окружения: " + ", ".join(missing))
         sys.exit(1)
 
-    print(f"Целевые контакты с {CONTACTS_SINCE} (created_at >= {CONTACTS_FROM_TS})"
+    print(f"Год {YEAR}: целевые контакты, листы «{SHEET_CONTACTS}» / «{SHEET_DEALS}»"
           + (" [DRY_RUN]" if DRY_RUN else ""))
 
     contacts = fetch_contacts()
@@ -461,11 +481,13 @@ def main():
         print("DRY_RUN — в таблицу ничего не писали.")
         return {'contacts': len(contact_rows), 'deals': len(deal_rows)}
 
-    values = sheets_values()
-    write_sheet(values, SHEET_CONTACTS, CONTACT_COLUMNS, contact_rows)
-    write_sheet(values, SHEET_DEALS, deal_columns or DEAL_FIXED_COLUMNS, deal_rows)
+    svc = sheets_service()
+    ensure_sheet(svc, SHEET_CONTACTS)
+    ensure_sheet(svc, SHEET_DEALS)
+    write_sheet(svc, SHEET_CONTACTS, CONTACT_COLUMNS, contact_rows)
+    write_sheet(svc, SHEET_DEALS, deal_columns or DEAL_FIXED_COLUMNS, deal_rows)
 
-    print(f"ГОТОВО. Контактов: {len(contact_rows)}, сделок: {len(deal_rows)}.")
+    print(f"ГОТОВО ({YEAR}). Контактов: {len(contact_rows)}, сделок: {len(deal_rows)}.")
     return {'contacts': len(contact_rows), 'deals': len(deal_rows)}
 
 
@@ -474,7 +496,7 @@ if __name__ == '__main__':
         s = main()
         if not DRY_RUN:
             send_telegram(
-                "✅ amoCRM 2-я линия: контакты и сделки выгружены\n"
+                f"✅ amoCRM 2-я линия ({YEAR}): контакты и сделки выгружены\n"
                 f"Целевых контактов: {s['contacts']}\n"
                 f"Сделок: {s['deals']}\n"
                 f"Таблица: https://docs.google.com/spreadsheets/d/{SECOND_LINE_SHEET_ID}"

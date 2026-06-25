@@ -10,11 +10,15 @@ on:
         description: 'Только проверка, без записи в таблицу (true/false)'
         required: false
         default: 'false'
+      year:
+        description: 'Год выгрузки (например 2025 для разовой догрузки). Пусто = 2026'
+        required: false
+        default: ''
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,3 +32,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DRY_RUN: ${{ inputs.dry_run }}
+          YEAR: ${{ inputs.year }}
