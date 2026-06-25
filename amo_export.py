@@ -43,9 +43,11 @@ PIPELINE_IDS = [8733326, 9701010, 7295078]
 # Глубина периода: сделки, созданные за последние N месяцев до вчера
 MONTHS_BACK = 3
 
-# Google-таблица назначения
-SPREADSHEET_ID = "1GyCp56dqcAMykbNUjU64gd40ZYZ4aNXgVsjCfcBTFzk"
-SHEET_NAME = "общая выгрузка от Никиты"   # вкладка (gid 777147018)
+# Google-таблица назначения.
+# ID берём из переменной SPREADSHEET_ID (GitHub: Settings → Variables), чтобы менять
+# таблицу каждый месяц без правки кода. Если переменная пустая — значение по умолчанию.
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "").strip() or "1GyCp56dqcAMykbNUjU64gd40ZYZ4aNXgVsjCfcBTFzk"
+SHEET_NAME = "общая выгрузка от Никиты"   # вкладка (название одинаковое во всех месячных файлах)
 HEADER_ROW = 2          # строка с заголовками колонок в таблице
 DATA_START_ROW = 15     # с какой строки писать данные (строки 3-14 — шапка/формулы)
 LAST_COLUMN = "DZ"      # правая граница диапазона для очистки (с запасом)
@@ -656,7 +658,8 @@ if __name__ == '__main__':
             "✅ amoCRM → Google Sheets: выгрузка выполнена\n"
             f"Период: {s['period']}\n"
             f"Сделок: {s['leads']}, контактов: {s['contacts']}\n"
-            f"Записано строк: {s['rows']}"
+            f"Записано строк: {s['rows']}\n"
+            f"Таблица: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
             + run_url_line()
         )
     except Exception as e:
