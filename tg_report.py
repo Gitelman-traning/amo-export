@@ -107,7 +107,7 @@ def main():
         for i, chunk in enumerate(chunks):
             body = f"{chunk}\n\n{i + 1}/{len(chunks)}" if len(chunks) > 1 else chunk
             if DRY_RUN:
-                print(f"  [{key}] → чат {chat_id}, часть {i + 1}/{len(chunks)}, {len(body)} симв.")
+                print(f"  [{key}] -> чат {chat_id}, часть {i + 1}/{len(chunks)}, {len(body)} симв.")
             else:
                 if send_telegram(chat_id, body):
                     sent += 1
