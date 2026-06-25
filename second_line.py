@@ -214,7 +214,7 @@ def fetch_leads_by_ids(ids):
     for chunk in chunked(list(ids), 100):
         data = amo_get('/api/v4/leads', {'limit': 250, 'filter[id][]': chunk})
         leads.extend((data.get('_embedded') or {}).get('leads') or [])
-        time.sleep(0.5)
+        time.sleep(0.2)
     return leads
 
 
@@ -250,7 +250,7 @@ def fetch_notes(deal_ids):
             if t == 'common' and ts > d['note']:
                 d['note'] = ts
                 d['noteText'] = (n.get('params') or {}).get('text') or ''
-        time.sleep(0.5)
+        time.sleep(0.2)
     return by
 
 
