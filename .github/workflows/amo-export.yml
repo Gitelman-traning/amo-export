@@ -1,0 +1,30 @@
+name: amoCRM → Google Sheets (выгрузка авто)
+
+on:
+  schedule:
+    # cron в GitHub Actions всегда в UTC.
+    # 19:00 UTC = 22:00 по Москве. Меняешь время — пересчитай в UTC (МСК − 3).
+    - cron: '0 19 * * *'
+  workflow_dispatch:   # позволяет запускать вручную кнопкой "Run workflow"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Забрать код
+        uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Установить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Запустить выгрузку
+        run: python amo_export.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
