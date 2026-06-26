@@ -53,8 +53,11 @@ DATA_START_ROW = 15     # с какой строки писать данные (
 LAST_COLUMN = "DZ"      # правая граница диапазона для очистки (с запасом)
 ROWS_TO_CLEAR = 10000   # сколько строк данных чистить перед записью
 
-# Куда писать дату выгрузки. Пусто ("") = не писать. Пример: "C1"
-EXPORT_DATE_CELL = ""
+# Блок «ключ/значение» в этом же листе: обновляем строку key="export_date" датой выгрузки.
+# ВАЖНО: именно от этой даты формулы в таблице строят отчёт (см. лист tg_reports).
+EXPORT_DATE_KEY = "export_date"
+EXPORT_DATE_KEY_COL = "KO"      # колонка с ключами
+EXPORT_DATE_VALUE_COL = "KP"    # колонка со значениями
 
 TIMEZONE = "Europe/Moscow"
 AMO_PAGE_LIMIT = 250         # сколько сделок за одну страницу amo
@@ -523,6 +526,24 @@ def enrich_row(row, contact_map):
     return row
 
 
+def update_export_date(values, date_text):
+    """Находит в листе строку с ключом export_date (колонка KO) и пишет дату в KP.
+    От этой даты формулы в таблице строят отчёт — обновлять обязательно."""
+    rng = f"'{SHEET_NAME}'!{EXPORT_DATE_KEY_COL}:{EXPORT_DATE_VALUE_COL}"
+    rows = values.get(spreadsheetId=SPREADSHEET_ID, range=rng).execute().get('values', [])
+    for i, row in enumerate(rows, start=1):
+        if row and str(row[0]).strip() == EXPORT_DATE_KEY:
+            values.update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"'{SHEET_NAME}'!{EXPORT_DATE_VALUE_COL}{i}",
+                valueInputOption='USER_ENTERED',
+                body={'values': [[date_text]]},
+            ).execute()
+            print(f"export_date обновлён: {date_text} (ячейка {EXPORT_DATE_VALUE_COL}{i})")
+            return
+    print(f"ВНИМАНИЕ: строка key={EXPORT_DATE_KEY} не найдена в колонке {EXPORT_DATE_KEY_COL} — дата не обновлена")
+
+
 def main():
     # --- проверка секретов ---
     missing = []
@@ -630,11 +651,7 @@ def main():
                       valueInputOption='USER_ENTERED',
                       body={'values': matrix}).execute()
 
-    if EXPORT_DATE_CELL:
-        values.update(spreadsheetId=SPREADSHEET_ID,
-                      range=f"'{SHEET_NAME}'!{EXPORT_DATE_CELL}",
-                      valueInputOption='USER_ENTERED',
-                      body={'values': [[date_to_text]]}).execute()
+    update_export_date(values, date_to_text)
 
     print(f"ГОТОВО. Записано строк: {len(matrix)} (с {DATA_START_ROW}-й строки).")
     return {

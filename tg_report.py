@@ -14,6 +14,7 @@ DRY_RUN=1 — ничего не отправляет, только печата�
 
 import os
 import sys
+import time
 
 import requests
 from google.oauth2.service_account import Credentials
@@ -31,6 +32,9 @@ TELEGRAM_MAX_LENGTH = 3800            # макс. длина одной част
 GOOGLE_SA_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+# Пауза перед чтением: даём таблице пересчитать формулы после выгрузки amoCRM.
+# Отчёт запускается сразу после выгрузки, а формулам нужно время. По умолчанию 4 мин.
+START_DELAY = int(os.environ.get("REPORT_START_DELAY", "240"))
 
 
 def is_enabled(value):
@@ -90,6 +94,10 @@ def main():
     if not DRY_RUN and not TELEGRAM_BOT_TOKEN:
         print("ОШИБКА: нет TELEGRAM_BOT_TOKEN (или включите DRY_RUN=1)")
         sys.exit(1)
+
+    if START_DELAY and not DRY_RUN:
+        print(f"Жду {START_DELAY}с, чтобы таблица пересчитала формулы после выгрузки...")
+        time.sleep(START_DELAY)
 
     rows = read_reports()
     rows = [r for r in rows if is_enabled(r.get("enabled"))]
