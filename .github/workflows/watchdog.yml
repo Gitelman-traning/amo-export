@@ -23,27 +23,28 @@ jobs:
       - name: Проверить ночные запуски и добить пропущенные
         shell: bash
         run: |
-          set -uo pipefail
+          set +e          # GitHub запускает bash с -e; выключаем, чтобы не обрывалось на gh-командах
           NOW=$(date -u +%s)
-          THRESH=14400          # 4 часа: если за это время запусков не было — считаем пропущенным
+          THRESH=14400    # 4 часа: если запусков за это время не было — считаем пропущенным
           MSG="🛡 Сторож ночных запусков ($(date -u +%H:%M) UTC)"
 
-          is_stale () {
-            local last
+          last_run_age () {   # echo: возраст последнего запуска workflow $1 в секундах (или большое число)
+            local last ts
             last=$(gh run list --workflow="$1" --limit 1 --json createdAt --jq '.[0].createdAt // empty' 2>/dev/null)
-            [ -z "$last" ] && return 0
-            local ts age
-            ts=$(date -u -d "$last" +%s 2>/dev/null || echo 0)
-            age=$(( NOW - ts ))
-            [ "$age" -gt "$THRESH" ]
+            [ -z "$last" ] && { echo 999999; return; }
+            ts=$(date -u -d "$last" +%s 2>/dev/null)
+            [ -z "$ts" ] && { echo 999999; return; }
+            echo $(( NOW - ts ))
           }
 
-          check () {   # $1=файл workflow, $2=человекочитаемое имя; 0=был пропущен и запущен
-            if is_stale "$1"; then
+          ensure () {   # $1=файл workflow, $2=имя; возвращает 0 если пришлось запускать
+            local age
+            age=$(last_run_age "$1")
+            if [ "$age" -gt "$THRESH" ]; then
               if gh workflow run "$1" >/dev/null 2>&1; then
-                MSG="$MSG"$'\n'"⚠️ $2 — ночью не было, запустил сейчас"
+                MSG="$MSG"$'\n'"⚠️ $2 — ночью не было, запустил"
               else
-                MSG="$MSG"$'\n'"❌ $2 — не было, и запустить НЕ удалось"
+                MSG="$MSG"$'\n'"❌ $2 — не было, и запуск не удался"
               fi
               return 0
             fi
@@ -51,34 +52,31 @@ jobs:
             return 1
           }
 
-          AMO_DISP=0
-          if check amo-export.yml "Выгрузка amoCRM"; then AMO_DISP=1; fi
-          check pbx-export.yml "Звонки OnlinePBX" || true
-          check second-line.yml "2-я линия (контакты+сделки)" || true
+          ensure amo-export.yml "Выгрузка amoCRM"; AMO_DISP=$?
+          ensure pbx-export.yml "Звонки OnlinePBX"
+          ensure second-line.yml "2-я линия (контакты+сделки)"
 
           # Отчёты в ТГ зависят от выгрузки amoCRM.
-          if [ "$AMO_DISP" -eq 1 ]; then
-            # дождёмся выгрузки и только потом запустим отчёт (у него ещё своя пауза на пересчёт)
+          if [ "$AMO_DISP" -eq 0 ]; then
             sleep 20
             RID=$(gh run list --workflow=amo-export.yml --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null)
-            gh run watch "$RID" --exit-status >/dev/null 2>&1 || true
-            if gh workflow run tg-report.yml >/dev/null 2>&1; then
-              MSG="$MSG"$'\n'"↳ Отчёты в ТГ — запустил после выгрузки"
-            fi
+            gh run watch "$RID" --exit-status >/dev/null 2>&1
+            gh workflow run tg-report.yml >/dev/null 2>&1 \
+              && MSG="$MSG"$'\n'"↳ Отчёты в ТГ — запустил после выгрузки"
           else
-            if is_stale tg-report.yml; then
+            AGE=$(last_run_age tg-report.yml)
+            if [ "$AGE" -gt "$THRESH" ]; then
               gh workflow run tg-report.yml >/dev/null 2>&1 \
-                && MSG="$MSG"$'\n'"⚠️ Отчёты в ТГ — не было, запустил" \
-                || MSG="$MSG"$'\n'"❌ Отчёты в ТГ — запустить не удалось"
+                && MSG="$MSG"$'\n'"⚠️ Отчёты в ТГ — не было, запустил"
             else
               MSG="$MSG"$'\n'"✅ Отчёты в ТГ — отработали"
             fi
           fi
 
           echo "$MSG"
-          if [ -n "${TG_TOKEN:-}" ] && [ -n "${TG_CHAT:-}" ]; then
+          if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               --data-urlencode "chat_id=${TG_CHAT}" \
               --data-urlencode "text=${MSG}" \
-              --data "disable_web_page_preview=true" >/dev/null || true
+              --data "disable_web_page_preview=true" >/dev/null
           fi
