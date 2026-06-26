@@ -1,0 +1,84 @@
+name: Сторож (добивает пропущенные ночные запуски)
+
+on:
+  schedule:
+    # 23:30 UTC = 02:30 МСК — позже ночного окна (01:10–01:42 МСК) и в другом часу,
+    # чтобы не попасть под ту же нагрузку планировщика GitHub.
+    - cron: '30 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write      # нужно, чтобы запускать другие workflow
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Проверить ночные запуски и добить пропущенные
+        shell: bash
+        run: |
+          set -uo pipefail
+          NOW=$(date -u +%s)
+          THRESH=14400          # 4 часа: если за это время запусков не было — считаем пропущенным
+          MSG="🛡 Сторож ночных запусков ($(date -u +%H:%M) UTC)"
+
+          is_stale () {
+            local last
+            last=$(gh run list --workflow="$1" --limit 1 --json createdAt --jq '.[0].createdAt // empty' 2>/dev/null)
+            [ -z "$last" ] && return 0
+            local ts age
+            ts=$(date -u -d "$last" +%s 2>/dev/null || echo 0)
+            age=$(( NOW - ts ))
+            [ "$age" -gt "$THRESH" ]
+          }
+
+          check () {   # $1=файл workflow, $2=человекочитаемое имя; 0=был пропущен и запущен
+            if is_stale "$1"; then
+              if gh workflow run "$1" >/dev/null 2>&1; then
+                MSG="$MSG"$'\n'"⚠️ $2 — ночью не было, запустил сейчас"
+              else
+                MSG="$MSG"$'\n'"❌ $2 — не было, и запустить НЕ удалось"
+              fi
+              return 0
+            fi
+            MSG="$MSG"$'\n'"✅ $2 — отработал"
+            return 1
+          }
+
+          AMO_DISP=0
+          if check amo-export.yml "Выгрузка amoCRM"; then AMO_DISP=1; fi
+          check pbx-export.yml "Звонки OnlinePBX" || true
+          check second-line.yml "2-я линия (контакты+сделки)" || true
+
+          # Отчёты в ТГ зависят от выгрузки amoCRM.
+          if [ "$AMO_DISP" -eq 1 ]; then
+            # дождёмся выгрузки и только потом запустим отчёт (у него ещё своя пауза на пересчёт)
+            sleep 20
+            RID=$(gh run list --workflow=amo-export.yml --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null)
+            gh run watch "$RID" --exit-status >/dev/null 2>&1 || true
+            if gh workflow run tg-report.yml >/dev/null 2>&1; then
+              MSG="$MSG"$'\n'"↳ Отчёты в ТГ — запустил после выгрузки"
+            fi
+          else
+            if is_stale tg-report.yml; then
+              gh workflow run tg-report.yml >/dev/null 2>&1 \
+                && MSG="$MSG"$'\n'"⚠️ Отчёты в ТГ — не было, запустил" \
+                || MSG="$MSG"$'\n'"❌ Отчёты в ТГ — запустить не удалось"
+            else
+              MSG="$MSG"$'\n'"✅ Отчёты в ТГ — отработали"
+            fi
+          fi
+
+          echo "$MSG"
+          if [ -n "${TG_TOKEN:-}" ] && [ -n "${TG_CHAT:-}" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${TG_CHAT}" \
+              --data-urlencode "text=${MSG}" \
+              --data "disable_web_page_preview=true" >/dev/null || true
+          fi
