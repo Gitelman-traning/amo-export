@@ -1,9 +1,7 @@
 name: OnlinePBX → Google Sheets (звонки)
 
 on:
-  schedule:
-    # 22:15 UTC = 01:15 МСК, ежедневно
-    - cron: '15 22 * * *'
+  # Запуск приходит извне (cron-job.org → GitHub API), плюс ручной из UI.
   workflow_dispatch:
 
 jobs:

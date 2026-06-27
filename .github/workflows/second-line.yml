@@ -1,9 +1,7 @@
 name: amoCRM 2-я линия (контакты + сделки)
 
 on:
-  schedule:
-    # 22:20 UTC = 01:20 МСК, ежедневно
-    - cron: '20 22 * * *'
+  # Запуск приходит извне (cron-job.org → GitHub API), плюс ручной из UI.
   workflow_dispatch:
     inputs:
       dry_run:
