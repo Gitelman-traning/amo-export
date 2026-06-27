@@ -50,6 +50,32 @@
 
 4. Сохранить. Готово — теперь запуск идёт точно по времени.
 
+### Быстрее: Import from cURL
+
+На странице создания задания есть кнопка **IMPORT FROM CURL** — она сама заполнит
+URL, метод, заголовки и тело. Вставьте команду (замените `ВАШ_ТОКЕН`), затем задайте
+расписание через **Custom** (crontab, часовой пояс Europe/Moscow):
+
+| Задание | Crontab | cURL (хвост URL) |
+|---|---|---|
+| amoCRM | `10 1 * * *` | `.../workflows/amo-export.yml/dispatches` |
+| OnlinePBX | `15 1 * * *` | `.../workflows/pbx-export.yml/dispatches` |
+| 2-я линия | `20 1 * * *` | `.../workflows/second-line.yml/dispatches` |
+| Напоминание | `0 9 1 * *` | `.../workflows/monthly-reminder.yml/dispatches` |
+
+Шаблон команды:
+```
+curl -X POST \
+  -H "Authorization: Bearer ВАШ_ТОКЕН" \
+  -H "Accept: application/vnd.github+json" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  -H "Content-Type: application/json" \
+  -d '{"ref":"main"}' \
+  https://api.github.com/repos/Gitelman-traning/amo-export/actions/workflows/amo-export.yml/dispatches
+```
+
+Кнопка **TEST RUN** на cron-job.org сразу проверит запрос (ожидаемый ответ — **204**).
+
 ---
 
 ## Как проверить, что работает
