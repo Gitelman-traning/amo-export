@@ -149,6 +149,15 @@ def chunked(seq, size):
         yield seq[i:i + size]
 
 
+def safe_cell(v):
+    """Экранируем формульную инъекцию Google Sheets: текст, начинающийся с =,+,-,@."""
+    if v is None:
+        return ''
+    if isinstance(v, str) and v[:1] in ('=', '+', '-', '@'):
+        return "'" + v
+    return v
+
+
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram-отбивка пропущена (нет TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).")
@@ -448,7 +457,7 @@ def ensure_sheet(svc, title):
 def write_sheet(svc, sheet_name, columns, rows):
     values = svc.values()
     values.clear(spreadsheetId=SECOND_LINE_SHEET_ID, range=f"'{sheet_name}'").execute()
-    matrix = [columns] + [[r.get(c, '') for c in columns] for r in rows]
+    matrix = [columns] + [[safe_cell(r.get(c, '')) for c in columns] for r in rows]
     values.update(
         spreadsheetId=SECOND_LINE_SHEET_ID,
         range=f"'{sheet_name}'!A1",

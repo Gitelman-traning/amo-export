@@ -665,6 +665,8 @@ def main():
 def _cell(v):
     if v is None:
         return ''
+    if isinstance(v, str) and v[:1] in ('=', '+', '-', '@'):
+        return "'" + v   # экранируем формульную инъекцию Google Sheets (#ERROR на +,-,=,@)
     return v
 
 

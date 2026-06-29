@@ -64,6 +64,15 @@ def format_ts(ts):
     return d.strftime('[%H:%M:%S] %Y-%m-%d')
 
 
+def safe_cell(v):
+    """Экранируем формульную инъекцию Google Sheets: текст, начинающийся с =,+,-,@."""
+    if v is None:
+        return ''
+    if isinstance(v, str) and v[:1] in ('=', '+', '-', '@'):
+        return "'" + v
+    return v
+
+
 def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram-отбивка пропущена (нет TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).")
@@ -182,7 +191,7 @@ def main():
     values = sheets_values()
     # Полная перезапись вкладки: чистим всё и пишем заголовки + данные с A1.
     values.clear(spreadsheetId=SPREADSHEET_ID, range=f"'{SHEET_NAME}'").execute()
-    matrix = [COLUMNS] + [[r[c] for c in COLUMNS] for r in rows]
+    matrix = [COLUMNS] + [[safe_cell(r[c]) for c in COLUMNS] for r in rows]
     values.update(
         spreadsheetId=SPREADSHEET_ID,
         range=f"'{SHEET_NAME}'!A1",
