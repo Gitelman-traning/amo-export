@@ -207,8 +207,10 @@ def fetch_reconciliation(first, last):
 
 
 def _currency_code(cur):
+    # Для счёта валюта приходит объектом {name:"RUB", code:"810", symbol:"₽"} —
+    # берём буквенное имя (RUB), а не числовой ISO-код. В /reconciliation это строка.
     if isinstance(cur, dict):
-        return cur.get("code") or cur.get("symbol") or cur.get("name") or ""
+        return cur.get("name") or cur.get("symbol") or cur.get("code") or ""
     return cur or ""
 
 
