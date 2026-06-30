@@ -1,32 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Выгрузка бюджета и расходов оператора связи BMI.io → Google Sheets.
+Выгрузка по оператору связи BMI.io → Google Sheets. Две вкладки:
 
-Каждый запуск пробегает по МЕСЯЦАМ заданного диапазона и на каждый месяц:
-  • GET /billing/spend     → расходы по категориям (breakdown[]) + абонплата/звонки/итого
-  • GET /reconciliation    → бюджет за месяц: начальное сальдо, обороты (приход/расход), конечное сальдо
+  • «BMI абонплата»        — состав текущего тарифа («за что» абонентка: DID-номера,
+                             пакет, городской и т.п.) + фактический итог абонплаты по
+                             месяцам из биллинга.
+  • «BMI звонки по странам» — помесячно: исходящие звонки в разрезе стран назначения
+                             (количество, минуты, стоимость). Источник — детальный
+                             экспорт /stats/calls/export (XLSX), где есть колонки
+                             «Страна (куда)» и «Цена».
 
-Кладёт результат в две вкладки Google Sheets (обе перезаписываются целиком, чтобы запуск был идемпотентным):
-  • «РАСХОДЫ»  — Месяц | Категория | Сумма | Валюта
-  • «БЮДЖЕТ»   — Месяц | Нач. сальдо | Поступления | Расходы | Кон. сальдо | Валюта
+Диапазон: BMI_DATE_FROM/BMI_DATE_TO (YYYY-MM-DD) или последние BMI_MONTHS_BACK месяцев (12).
+Запуск — GitHub Actions (см. workflow bmi-export.yml). Документация: https://rest.bmi.io/v1/docs/
 
-Диапазон задаётся переменными окружения:
-  • BMI_DATE_FROM / BMI_DATE_TO  — границы (YYYY-MM-DD). Если не заданы —
-    берутся последние BMI_MONTHS_BACK месяцев (по умолчанию 12) по текущий месяц.
-
-Запускается по расписанию через GitHub Actions (см. .github/workflows/bmi-export.yml).
-Документация API: https://rest.bmi.io/v1/docs/
+Примечание: построчной ПОМЕСЯЧНОЙ детализации абонплаты в API нет (акты отдают только
+итог, /tariffs/current — текущий снимок). Поэтому состав показываем по актуальному тарифу,
+а помесячно — фактический итог абонплаты из /billing/spend.
 """
 
+import io
 import os
 import sys
+import csv
 import json
 import time as _time
 from datetime import date, datetime
+from collections import defaultdict
 from zoneinfo import ZoneInfo
 
 import requests
+import openpyxl
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
@@ -39,13 +43,20 @@ TIMEZONE = "Europe/Moscow"
 MSK = ZoneInfo(TIMEZONE)
 
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "").strip()
-SHEET_EXPENSES = os.environ.get("BMI_SHEET_EXPENSES", "").strip() or "BMI расходы"
-SHEET_BUDGET = os.environ.get("BMI_SHEET_BUDGET", "").strip() or "BMI бюджет"
+SHEET_SUBSCRIPTION = os.environ.get("BMI_SHEET_SUBSCRIPTION", "").strip() or "BMI абонплата"
+SHEET_CALLS = os.environ.get("BMI_SHEET_CALLS", "").strip() or "BMI звонки по странам"
+# Старые вкладки прошлой версии — удаляем, чтобы не путались.
+SHEETS_TO_REMOVE = ["BMI расходы", "BMI бюджет"]
 
 MONTHS_BACK = int(os.environ.get("BMI_MONTHS_BACK", "12") or "12")
 
-COLUMNS_EXPENSES = ["Месяц", "Категория", "Сумма", "Валюта"]
-COLUMNS_BUDGET = ["Месяц", "Нач. сальдо", "Поступления", "Расходы", "Кон. сальдо", "Валюта"]
+# Колонки экспорта /stats/calls/export (ищем по названию заголовка, не по индексу)
+COL_DIRECTION = "Направление"
+COL_COUNTRY_DST = "Страна (куда)"
+COL_SECONDS = "Тарифиц. время, сек"
+COL_PRICE = "Цена"
+COL_CURRENCY = "Валюта"
+DIRECTION_OUT = "Исходящий"
 
 # ---- Секреты из окружения ----
 BMI_API_KEY = os.environ.get("BMI_API_KEY", "").strip()
@@ -53,8 +64,7 @@ GOOGLE_SA_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-# Гайд BMI: заголовок «X-API-Key: <id>:<key>» (НЕ Bearer). Ключ передаётся целиком,
-# вместе с двоеточием. Bearer оставлен запасным вариантом на случай смены схемы.
+# Заголовок авторизации: «X-API-Key: <id>:<key>» (Bearer запасной). Override через BMI_AUTH_SCHEME.
 _AUTH_SCHEME = os.environ.get("BMI_AUTH_SCHEME", "").strip().lower()  # "apikey" | "bearer" | ""
 
 
@@ -72,7 +82,6 @@ def safe_cell(v):
 
 
 def num(v):
-    """Аккуратно приводим к числу; пустое/мусор → 0."""
     if v is None or v == "":
         return 0
     try:
@@ -106,37 +115,38 @@ def run_url_line():
     return ""
 
 
+def _currency_code(cur):
+    # Валюта счёта приходит объектом {name:"RUB", code:"810", symbol:"₽"} — берём имя (RUB).
+    if isinstance(cur, dict):
+        return cur.get("name") or cur.get("symbol") or cur.get("code") or ""
+    return cur or ""
+
+
 # ============================================================
 #  BMI.io API
 # ============================================================
 
 def _auth_headers(scheme):
-    if scheme == "apikey":
-        return {"X-API-Key": BMI_API_KEY, "Accept": "application/json"}
-    return {"Authorization": f"Bearer {BMI_API_KEY}", "Accept": "application/json"}
+    if scheme == "bearer":
+        return {"Authorization": f"Bearer {BMI_API_KEY}", "Accept": "application/json"}
+    return {"X-API-Key": BMI_API_KEY, "Accept": "application/json"}
 
 
 def bmi_get(path, params=None):
-    """GET к BMI с автоопределением схемы авторизации (Bearer / X-API-Key)."""
+    """GET к BMI с автоопределением схемы авторизации (X-API-Key / Bearer)."""
     global _AUTH_SCHEME
     schemes = [_AUTH_SCHEME] if _AUTH_SCHEME in ("bearer", "apikey") else ["apikey", "bearer"]
     last = None
     for scheme in schemes:
-        r = requests.get(
-            f"{BMI_API}{path}",
-            headers=_auth_headers(scheme),
-            params=params or {},
-            timeout=120,
-        )
-        # 401 — заголовок не принят (не та схема), пробуем следующую.
-        # 403 — ключ невалиден/заблокирован/истёк (по гайду BMI) — менять схему бессмысленно.
+        r = requests.get(f"{BMI_API}{path}", headers=_auth_headers(scheme),
+                         params=params or {}, timeout=120)
         if r.status_code == 401 and len(schemes) > 1:
             last = r
             continue
         if r.status_code == 403:
             raise RuntimeError(f"BMI {path}: ключ отклонён (403 — невалиден/заблокирован/истёк).")
         r.raise_for_status()
-        _AUTH_SCHEME = scheme  # запомнили рабочую схему
+        _AUTH_SCHEME = scheme
         return r.json()
     raise RuntimeError(f"BMI {path}: авторизация не прошла (401 — заголовок не принят).")
 
@@ -147,71 +157,106 @@ def month_ranges(d_from, d_to):
     y, m = d_from.year, d_from.month
     while (y, m) <= (d_to.year, d_to.month):
         first = date(y, m, 1)
-        if m == 12:
-            ny, nm = y + 1, 1
-        else:
-            ny, nm = y, m + 1
-        last = date(ny, nm, 1).toordinal() - 1
-        last = date.fromordinal(last)
+        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+        last = date.fromordinal(date(ny, nm, 1).toordinal() - 1)
         out.append((y, m, first, last, f"{y}-{m:02d}"))
         y, m = ny, nm
     return out
 
 
 def fetch_account_currency():
-    """Берём валюту счёта из /accounts (в /billing/spend её нет). Возвращает код, напр. 'RUB'."""
     try:
         j = bmi_get("/accounts", {"page_size": 1})
         data = j.get("data") or []
         if data:
             return _currency_code(data[0].get("currency"))
     except Exception as ex:
-        print(f"  валюту счёта определить не удалось ({type(ex).__name__}); ставлю пусто")
+        print(f"  валюту счёта определить не удалось ({type(ex).__name__})")
     return ""
 
 
-def fetch_spend(first, last):
-    """GET /billing/spend → список строк расходов по категориям за месяц + валюта."""
+def fetch_monthly_fee(first, last):
+    """GET /billing/spend → фактическая абонплата за месяц (поле monthly_fee)."""
     j = bmi_get("/billing/spend", {"date_from": first.isoformat(), "date_to": last.isoformat()})
-    currency = _currency_code(j.get("currency"))  # в /billing/spend обычно отсутствует
-    rows = []
-    breakdown = j.get("breakdown") or []
-    if breakdown:
-        for b in breakdown:
-            rows.append({
-                "category": b.get("label") or b.get("category") or "—",
-                "amount": num(b.get("amount")),
-            })
-    else:
-        # запасной вариант: из плоских полей, если breakdown пуст
-        if j.get("monthly_fee") not in (None, ""):
-            rows.append({"category": "Абонентская плата", "amount": num(j.get("monthly_fee"))})
-        if j.get("calls_cost") not in (None, ""):
-            rows.append({"category": "Платные звонки", "amount": num(j.get("calls_cost"))})
-    total = num(j.get("total"))
-    return rows, total, currency
+    return num(j.get("monthly_fee"))
 
 
-def fetch_reconciliation(first, last):
-    """GET /reconciliation → бюджет за месяц (сальдо и обороты)."""
-    j = bmi_get("/reconciliation", {"date_from": first.isoformat(), "date_to": last.isoformat()})
+def fetch_tariff_composition():
+    """GET /tariffs/current → состав абонплаты: строки {tariff, item, count, price, line}."""
+    j = bmi_get("/tariffs/current")
     currency = _currency_code(j.get("currency"))
-    # Сальдо в пользу клиента: кредит − дебет (плюс = деньги на счёте / предоплата).
-    return {
-        "opening": num(j.get("opening_credit")) - num(j.get("opening_debit")),
-        "income": num(j.get("turnover_credit")),   # поступления/оплаты = кредит
-        "expense": num(j.get("turnover_debit")),   # начисления за услуги = дебет
-        "closing": num(j.get("closing_credit")) - num(j.get("closing_debit")),
-        "currency": currency,
-    }
+    rows, total = [], 0.0
+    for t in j.get("tariffs", []):
+        tname = t.get("name") or ""
+        for f in t.get("fees", []):
+            count = f.get("count") or 0
+            price = num(f.get("price"))
+            line = round(count * price, 2)
+            total += line
+            rows.append({"tariff": tname, "item": f.get("name") or "",
+                         "count": count, "price": price, "line": line})
+    return rows, round(total, 2), currency
 
 
-def _currency_code(cur):
-    # Для счёта валюта приходит объектом {name:"RUB", code:"810", symbol:"₽"} —
-    # берём буквенное имя (RUB), а не числовой ISO-код. В /reconciliation это строка.
-    if isinstance(cur, dict):
-        return cur.get("name") or cur.get("symbol") or cur.get("code") or ""
-    return cur or ""
+def fetch_calls_by_country(first, last):
+    """Детальный экспорт звонков за месяц → агрегат по стране назначения (исходящие).
+
+    Возвращает (rows, currency), где rows = [{country, calls, minutes, cost}] (сорт по cost desc).
+    """
+    j = bmi_get("/stats/calls/export",
+                {"date_from": first.isoformat(), "date_to": last.isoformat()})
+    url = j.get("file_url")
+    count = j.get("count") or 0
+    fmt = (j.get("format") or "xlsx").lower()
+    if not url or not count:
+        return [], ""
+
+    resp = requests.get(url, timeout=300)
+    resp.raise_for_status()
+    data = resp.content
+
+    agg = defaultdict(lambda: {"calls": 0, "seconds": 0, "cost": 0.0})
+    currency = ""
+
+    if fmt == "csv":
+        text = data.decode("utf-8-sig", errors="replace")
+        reader = csv.reader(io.StringIO(text), delimiter=";")
+        header = next(reader, [])
+        idx = {h: i for i, h in enumerate(header)}
+        for row in reader:
+            currency = _accumulate(agg, row, idx, currency)
+    else:
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        ws = wb.active
+        it = ws.iter_rows(values_only=True)
+        header = list(next(it, []))
+        idx = {h: i for i, h in enumerate(header)}
+        for row in it:
+            currency = _accumulate(agg, row, idx, currency)
+        wb.close()
+
+    rows = [{"country": c, "calls": v["calls"],
+             "minutes": round(v["seconds"] / 60),
+             "cost": round(v["cost"], 2)}
+            for c, v in agg.items()]
+    rows.sort(key=lambda r: r["cost"], reverse=True)
+    return rows, currency
+
+
+def _accumulate(agg, row, idx, currency):
+    """Учитываем одну строку экспорта: только исходящие, группировка по стране назначения."""
+    def cell(name):
+        i = idx.get(name)
+        return row[i] if i is not None and i < len(row) else None
+
+    if (cell(COL_DIRECTION) or "") != DIRECTION_OUT:
+        return currency
+    country = cell(COL_COUNTRY_DST) or "—"
+    a = agg[country]
+    a["calls"] += 1
+    a["seconds"] += int(cell(COL_SECONDS) or 0)
+    a["cost"] += num(cell(COL_PRICE))
+    return currency or (cell(COL_CURRENCY) or "")
 
 
 # ============================================================
@@ -225,29 +270,33 @@ def sheets_service():
     return build("sheets", "v4", credentials=creds, cache_discovery=False).spreadsheets()
 
 
-def ensure_sheet(svc, title):
-    """Создаёт вкладку, если её ещё нет."""
-    meta = svc.get(spreadsheetId=SPREADSHEET_ID, fields="sheets.properties.title").execute()
-    titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
-    if title not in titles:
-        svc.batchUpdate(
-            spreadsheetId=SPREADSHEET_ID,
-            body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
-        ).execute()
+def _sheet_map(svc):
+    meta = svc.get(spreadsheetId=SPREADSHEET_ID,
+                   fields="sheets.properties(sheetId,title)").execute()
+    return {s["properties"]["title"]: s["properties"]["sheetId"] for s in meta.get("sheets", [])}
 
 
-def write_sheet(svc, title, columns, matrix_rows):
-    """Полная перезапись вкладки: чистим всё, пишем заголовки + данные с A1."""
-    ensure_sheet(svc, title)
+def ensure_sheet(svc, title, existing):
+    if title not in existing:
+        svc.batchUpdate(spreadsheetId=SPREADSHEET_ID,
+                        body={"requests": [{"addSheet": {"properties": {"title": title}}}]}).execute()
+
+
+def delete_sheets(svc, titles, existing):
+    reqs = [{"deleteSheet": {"sheetId": existing[t]}} for t in titles if t in existing]
+    if reqs:
+        svc.batchUpdate(spreadsheetId=SPREADSHEET_ID, body={"requests": reqs}).execute()
+        print(f"Удалены старые вкладки: {', '.join(t for t in titles if t in existing)}")
+
+
+def write_matrix(svc, title, matrix, existing):
+    """Полная перезапись вкладки сырой матрицей строк."""
+    ensure_sheet(svc, title, existing)
     values = svc.values()
     values.clear(spreadsheetId=SPREADSHEET_ID, range=f"'{title}'").execute()
-    matrix = [columns] + [[safe_cell(c) for c in row] for row in matrix_rows]
-    values.update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"'{title}'!A1",
-        valueInputOption="USER_ENTERED",
-        body={"values": matrix},
-    ).execute()
+    safe = [[safe_cell(c) for c in row] for row in matrix]
+    values.update(spreadsheetId=SPREADSHEET_ID, range=f"'{title}'!A1",
+                  valueInputOption="USER_ENTERED", body={"values": safe}).execute()
 
 
 # ============================================================
@@ -261,14 +310,47 @@ def resolve_range():
         return date.fromisoformat(df), date.fromisoformat(dt)
     today = datetime.now(MSK).date()
     end = date(today.year, today.month, 1)
-    # отматываем MONTHS_BACK-1 месяцев назад от текущего
     y, m = end.year, end.month
-    back = MONTHS_BACK - 1
-    m -= back
+    m -= (MONTHS_BACK - 1)
     while m <= 0:
         m += 12
         y -= 1
     return date(y, m, 1), today
+
+
+def build_subscription_matrix(months, currency):
+    """Матрица вкладки «BMI абонплата»: состав тарифа + помесячный итог."""
+    comp, comp_total, comp_cur = fetch_tariff_composition()
+    cur = comp_cur or currency
+    matrix = []
+    matrix.append([f"Состав абонентской платы (текущий тариф), {cur}"])
+    matrix.append(["Тариф", "Статья", "Кол-во", "Цена за ед.", "Сумма в месяц"])
+    for r in comp:
+        matrix.append([r["tariff"], r["item"], r["count"], r["price"], r["line"]])
+    matrix.append(["", "ИТОГО по тарифу", "", "", comp_total])
+    matrix.append([])
+    matrix.append(["Фактически начислено по месяцам (биллинг)"])
+    matrix.append(["Месяц", f"Абонплата, {cur}"])
+    for (y, m, first, last, label) in months:
+        matrix.append([label, fetch_monthly_fee(first, last)])
+        _time.sleep(0.2)
+    return matrix, len(comp)
+
+
+def build_calls_matrix(months, currency):
+    """Матрица вкладки «BMI звонки по странам»: помесячно × страна назначения."""
+    matrix = [["Месяц", "Страна (куда)", "Звонков", "Минуты", "Стоимость", "Валюта"]]
+    total_rows = 0
+    for (y, m, first, last, label) in months:
+        rows, cur = fetch_calls_by_country(first, last)
+        cur = cur or currency
+        for r in rows:
+            matrix.append([label, r["country"], r["calls"], r["minutes"], r["cost"], cur])
+        total_rows += len(rows)
+        print(f"  {label}: стран {len(rows)}, "
+              f"сумма {round(sum(r['cost'] for r in rows), 2)} {cur}")
+        _time.sleep(0.3)
+    return matrix, total_rows
 
 
 def main():
@@ -283,58 +365,39 @@ def main():
 
     d_from, d_to = resolve_range()
     months = month_ranges(d_from, d_to)
-    print(f"Диапазон: {d_from} — {d_to} ({len(months)} мес.). Схема авторизации: "
-          f"{_AUTH_SCHEME or 'автоопределение'}")
+    print(f"Диапазон: {d_from} — {d_to} ({len(months)} мес.)")
 
-    expense_rows = []   # Месяц | Категория | Сумма | Валюта
-    budget_rows = []    # Месяц | Нач. | Приход | Расход | Кон. | Валюта
-    acc_currency = fetch_account_currency()  # валюта счёта — дефолт для всех строк
-    currency_seen = acc_currency
+    currency = fetch_account_currency()
 
-    for (y, m, first, last, label) in months:
-        # --- расходы по категориям ---
-        rows, total, cur = fetch_spend(first, last)
-        cur = cur or acc_currency
-        currency_seen = currency_seen or cur
-        for r in rows:
-            expense_rows.append([label, r["category"], r["amount"], cur])
-        if rows:
-            expense_rows.append([label, "ИТОГО", total, cur])
+    print("Абонплата (состав тарифа + помесячный итог)...")
+    sub_matrix, comp_items = build_subscription_matrix(months, currency)
 
-        # --- бюджет (акт сверки) ---
-        try:
-            b = fetch_reconciliation(first, last)
-            budget_rows.append([label, b["opening"], b["income"], b["expense"],
-                                b["closing"], b["currency"] or cur])
-        except Exception as ex:
-            print(f"  {label}: /reconciliation недоступен ({type(ex).__name__}: {str(ex)[:120]})")
-
-        print(f"  {label}: категорий {len(rows)}, итого {total} {cur}")
-        _time.sleep(0.3)
+    print("Звонки по странам (детальный экспорт по месяцам)...")
+    calls_matrix, calls_rows = build_calls_matrix(months, currency)
 
     svc = sheets_service()
-    write_sheet(svc, SHEET_EXPENSES, COLUMNS_EXPENSES, expense_rows)
-    print(f"Записано в «{SHEET_EXPENSES}»: {len(expense_rows)} строк.")
-    if budget_rows:
-        write_sheet(svc, SHEET_BUDGET, COLUMNS_BUDGET, budget_rows)
-        print(f"Записано в «{SHEET_BUDGET}»: {len(budget_rows)} строк.")
+    existing = _sheet_map(svc)
+    delete_sheets(svc, SHEETS_TO_REMOVE, existing)
+    existing = _sheet_map(svc)  # обновили после удаления
 
-    return {
-        "period": f"{d_from} — {d_to}",
-        "months": len(months),
-        "expense_rows": len(expense_rows),
-        "budget_rows": len(budget_rows),
-        "currency": currency_seen,
-    }
+    write_matrix(svc, SHEET_SUBSCRIPTION, sub_matrix, existing)
+    print(f"Записано в «{SHEET_SUBSCRIPTION}»: статей тарифа {comp_items}, месяцев {len(months)}.")
+    existing = _sheet_map(svc)
+    write_matrix(svc, SHEET_CALLS, calls_matrix, existing)
+    print(f"Записано в «{SHEET_CALLS}»: строк (мес.×страна) {calls_rows}.")
+
+    return {"period": f"{d_from} — {d_to}", "months": len(months),
+            "comp_items": comp_items, "calls_rows": calls_rows, "currency": currency}
 
 
 if __name__ == "__main__":
     try:
         s = main()
         send_telegram(
-            "✅ BMI.io → Google Sheets: бюджет и расходы выгружены\n"
+            "✅ BMI.io → Google Sheets: выгрузка обновлена\n"
             f"Период: {s['period']} ({s['months']} мес.)\n"
-            f"Строк расходов: {s['expense_rows']}, строк бюджета: {s['budget_rows']}\n"
+            f"Абонплата: статей тарифа {s['comp_items']} + итоги по месяцам\n"
+            f"Звонки по странам: строк {s['calls_rows']}\n"
             f"Таблица: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
             + run_url_line()
         )
