@@ -1,0 +1,33 @@
+name: BMI.io → Google Sheets (бюджет и расходы)
+
+on:
+  # Запуск приходит извне (cron-job.org → GitHub API), плюс ручной из UI.
+  workflow_dispatch:
+    inputs:
+      date_from:
+        description: "Начало периода YYYY-MM-DD (необязательно)"
+        required: false
+      date_to:
+        description: "Конец периода YYYY-MM-DD (необязательно)"
+        required: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python bmi_export.py
+        env:
+          BMI_API_KEY: ${{ secrets.BMI_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
+          BMI_MONTHS_BACK: ${{ vars.BMI_MONTHS_BACK }}
+          BMI_DATE_FROM: ${{ inputs.date_from }}
+          BMI_DATE_TO: ${{ inputs.date_to }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
