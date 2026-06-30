@@ -505,7 +505,7 @@ if __name__ == '__main__':
         s = main()
         if not DRY_RUN:
             send_telegram(
-                f"✅ amoCRM 2-я линия ({YEAR}): контакты и сделки выгружены\n"
+                f"✅ amoCRM контакты {YEAR}: контакты и сделки выгружены\n"
                 f"Целевых контактов: {s['contacts']}\n"
                 f"Сделок: {s['deals']}\n"
                 f"Таблица: https://docs.google.com/spreadsheets/d/{SECOND_LINE_SHEET_ID}"
@@ -513,7 +513,7 @@ if __name__ == '__main__':
             )
     except Exception as e:
         send_telegram(
-            "❌ amoCRM 2-я линия: ПАЙПЛАЙН УПАЛ\n"
+            f"❌ amoCRM контакты {YEAR}: пайплайн упал\n"
             f"Ошибка: {type(e).__name__}: {str(e)[:300]}"
             + run_url_line()
         )
