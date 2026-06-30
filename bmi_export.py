@@ -4,8 +4,8 @@
 Выгрузка по оператору связи BMI.io → Google Sheets. Две вкладки:
 
   • «BMI абонплата»        — состав текущего тарифа («за что» абонентка: DID-номера,
-                             пакет, городской и т.п.) + фактический итог абонплаты по
-                             месяцам из биллинга.
+                             пакет, городской и т.п.) + реальные начисления по месяцам
+                             из актов (только месяцы, где акт реально был).
   • «BMI звонки по странам» — помесячно: исходящие звонки в разрезе стран назначения
                              (количество, минуты, стоимость). Источник — детальный
                              экспорт /stats/calls/export (XLSX), где есть колонки
@@ -15,8 +15,10 @@
 Запуск — GitHub Actions (см. workflow bmi-export.yml). Документация: https://rest.bmi.io/v1/docs/
 
 Примечание: построчной ПОМЕСЯЧНОЙ детализации абонплаты в API нет (акты отдают только
-итог, /tariffs/current — текущий снимок). Поэтому состав показываем по актуальному тарифу,
-а помесячно — фактический итог абонплаты из /billing/spend.
+итог за месяц, /tariffs/current — текущий снимок). Поэтому состав показываем по актуальному
+тарифу, а помесячно — реальную сумму акта. ВАЖНО: /billing/spend.monthly_fee НЕ используем —
+он проецирует текущий тариф на любой период (всегда ~23100) и недостоверен для прошлых месяцев.
+Сумма акта — это всё начисление за месяц (абонплата + связь); чисто абонплату API не отделяет.
 """
 
 import io
@@ -175,10 +177,21 @@ def fetch_account_currency():
     return ""
 
 
-def fetch_monthly_fee(first, last):
-    """GET /billing/spend → фактическая абонплата за месяц (поле monthly_fee)."""
-    j = bmi_get("/billing/spend", {"date_from": first.isoformat(), "date_to": last.isoformat()})
-    return num(j.get("monthly_fee"))
+def fetch_acts(d_from, d_to):
+    """GET /documents?type=act → реальные начисления по месяцам {YYYY-MM: amount}.
+
+    Это фактически выставленные акты (помесячно), в отличие от /billing/spend.monthly_fee,
+    который проецирует ТЕКУЩИЙ тариф на любой период и потому недостоверен для прошлого.
+    Месяцы без акта (например, ещё не закрытый текущий) не попадают в результат.
+    """
+    j = bmi_get("/documents", {"type": "act", "date_from": d_from.isoformat(),
+                               "date_to": d_to.isoformat(), "page_size": 200})
+    out = {}
+    for a in j.get("data") or []:
+        d = (a.get("date") or "")[:7]  # YYYY-MM
+        if d:
+            out[d] = num(a.get("amount"))
+    return out
 
 
 def fetch_tariff_composition():
@@ -318,8 +331,8 @@ def resolve_range():
     return date(y, m, 1), today
 
 
-def build_subscription_matrix(months, currency):
-    """Матрица вкладки «BMI абонплата»: состав тарифа + помесячный итог."""
+def build_subscription_matrix(months, d_from, d_to, currency):
+    """Матрица вкладки «BMI абонплата»: состав текущего тарифа + реальные акты по месяцам."""
     comp, comp_total, comp_cur = fetch_tariff_composition()
     cur = comp_cur or currency
     matrix = []
@@ -329,12 +342,15 @@ def build_subscription_matrix(months, currency):
         matrix.append([r["tariff"], r["item"], r["count"], r["price"], r["line"]])
     matrix.append(["", "ИТОГО по тарифу", "", "", comp_total])
     matrix.append([])
-    matrix.append(["Фактически начислено по месяцам (биллинг)"])
-    matrix.append(["Месяц", f"Абонплата, {cur}"])
+    matrix.append(["Фактически начислено по месяцам (акты; всего за месяц = абонплата + связь)"])
+    matrix.append(["Месяц", f"Начислено по акту, {cur}"])
+    acts = fetch_acts(d_from, d_to)
+    months_with_act = 0
     for (y, m, first, last, label) in months:
-        matrix.append([label, fetch_monthly_fee(first, last)])
-        _time.sleep(0.2)
-    return matrix, len(comp)
+        if label in acts:  # показываем только месяцы, где акт реально был
+            matrix.append([label, acts[label]])
+            months_with_act += 1
+    return matrix, len(comp), months_with_act
 
 
 def build_calls_matrix(months, currency):
@@ -369,8 +385,9 @@ def main():
 
     currency = fetch_account_currency()
 
-    print("Абонплата (состав тарифа + помесячный итог)...")
-    sub_matrix, comp_items = build_subscription_matrix(months, currency)
+    print("Абонплата (состав тарифа + реальные акты по месяцам)...")
+    sub_matrix, comp_items, months_with_act = build_subscription_matrix(months, d_from, d_to, currency)
+    print(f"  статей тарифа {comp_items}, месяцев с актом {months_with_act}")
 
     print("Звонки по странам (детальный экспорт по месяцам)...")
     calls_matrix, calls_rows = build_calls_matrix(months, currency)
@@ -381,7 +398,7 @@ def main():
     existing = _sheet_map(svc)  # обновили после удаления
 
     write_matrix(svc, SHEET_SUBSCRIPTION, sub_matrix, existing)
-    print(f"Записано в «{SHEET_SUBSCRIPTION}»: статей тарифа {comp_items}, месяцев {len(months)}.")
+    print(f"Записано в «{SHEET_SUBSCRIPTION}»: статей тарифа {comp_items}, месяцев с актом {months_with_act}.")
     existing = _sheet_map(svc)
     write_matrix(svc, SHEET_CALLS, calls_matrix, existing)
     print(f"Записано в «{SHEET_CALLS}»: строк (мес.×страна) {calls_rows}.")
