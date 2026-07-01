@@ -1,7 +1,11 @@
 name: BMI.io → Google Sheets (бюджет и расходы)
 
 on:
-  # Запуск приходит извне (cron-job.org → GitHub API), плюс ручной из UI.
+  # Запускается СРАЗУ ПОСЛЕ ежедневной выгрузки звонков OnlinePBX (та крутится в 01:15 МСК),
+  # так BMI обновляется каждый день вместе со звонками. Плюс ручной запуск из UI.
+  workflow_run:
+    workflows: ["OnlinePBX → Google Sheets (звонки)"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       date_from:
@@ -15,6 +19,8 @@ jobs:
   export:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # По цепочке — только если выгрузка звонков прошла успешно. Вручную — всегда.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

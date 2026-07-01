@@ -7,6 +7,10 @@
 `Публикация отчётов в ТГ` отдельно НЕ дёргается — она запускается автоматически после
 выгрузки amoCRM (триггер `workflow_run`).
 
+`BMI бюджет и расходы` тоже отдельно НЕ дёргается — запускается автоматически сразу после
+ежедневной выгрузки звонков OnlinePBX (триггер `workflow_run`), т.е. обновляется каждый день
+вместе со звонками.
+
 ---
 
 ## Шаг 1. Создать токен GitHub (PAT)
@@ -47,7 +51,8 @@
    | Звонки OnlinePBX | `https://api.github.com/repos/Gitelman-traning/amo-export/actions/workflows/pbx-export.yml/dispatches` | каждый день **01:15** |
    | Контакты+сделки 2-й линии | `https://api.github.com/repos/Gitelman-traning/amo-export/actions/workflows/second-line.yml/dispatches` | каждый день **01:20** |
    | Напоминание о таблице | `https://api.github.com/repos/Gitelman-traning/amo-export/actions/workflows/monthly-reminder.yml/dispatches` | **1-го числа** каждого месяца, **09:00** |
-   | BMI бюджет и расходы | `https://api.github.com/repos/Gitelman-traning/amo-export/actions/workflows/bmi-export.yml/dispatches` | **1-го числа** каждого месяца, **09:30** |
+
+   > BMI отдельного задания НЕ требует — идёт по цепочке после звонков OnlinePBX (см. выше).
 
 4. Сохранить. Готово — теперь запуск идёт точно по времени.
 
@@ -63,7 +68,6 @@ URL, метод, заголовки и тело. Вставьте команду
 | OnlinePBX | `15 1 * * *` | `.../workflows/pbx-export.yml/dispatches` |
 | 2-я линия | `20 1 * * *` | `.../workflows/second-line.yml/dispatches` |
 | Напоминание | `0 9 1 * *` | `.../workflows/monthly-reminder.yml/dispatches` |
-| BMI бюджет/расходы | `30 9 1 * *` | `.../workflows/bmi-export.yml/dispatches` |
 
 Шаблон команды:
 ```
