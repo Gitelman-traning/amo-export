@@ -11,6 +11,10 @@ on:
         description: 'Только проверка, без реальной отправки (true/false)'
         required: false
         default: 'false'
+      spreadsheet_id:
+        description: 'ID таблицы для разовой публикации (пусто = текущая из переменной)'
+        required: false
+        default: ''
 
 jobs:
   publish:
@@ -29,5 +33,7 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
+          SPREADSHEET_ID: ${{ inputs.spreadsheet_id || vars.SPREADSHEET_ID }}
           DRY_RUN: ${{ inputs.dry_run }}
+          # при ручном запуске пауза на пересчёт не нужна (данные уже устоялись)
+          REPORT_START_DELAY: ${{ github.event_name == 'workflow_dispatch' && '0' || '240' }}
