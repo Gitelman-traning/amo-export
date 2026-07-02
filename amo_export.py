@@ -10,7 +10,7 @@
 Логика 1-в-1 повторяет n8n-версию:
   1. Берём период: сделки, созданные за последние 3 месяца до вчера (по Москве).
   2. Тянем справочники (пользователи, воронки/этапы) из amoCRM.
-  3. Тянем сделки трёх воронок постранично (with=contacts,loss_reason).
+  3. Тянем сделки трёх воронок постранично (with=contacts).
   4. Разворачиваем каждую сделку в строку с ~70 колонками (кастомные поля по именам).
   5. Догружаем основные контакты сделок и обогащаем строки (телефон, tg, должность...).
   6. Чистим старые данные в таблице и пишем новые.
@@ -111,6 +111,7 @@ FIELD_ALIASES = {
     'Должность': ['Должность'],
     'Квалификация': ['Квалификация'],
     'Грейд': ['Грейд', 'грейд', 'Grade'],
+    'Причина отказа': ['Причина отказа', 'Причина отказа ', 'причина отказа'],
     'Ниша': ['Ниша'],
     'Дата вступил в чат': ['Дата вступил в чат', 'Дата вступления в чат', 'Дата вступления'],
     'Дата взят в работу': ['Дата взят в работу'],
@@ -310,41 +311,6 @@ def get_main_contact_id(lead):
     return contacts[0].get('id') if contacts else ''
 
 
-def get_loss_reason_name(lead, loss_map=None):
-    # 1) встроенный (with=loss_reason), если пришёл
-    e = (lead.get('_embedded') or {}).get('loss_reason')
-    if isinstance(e, list) and e and e[0].get('name'):
-        return e[0]['name']
-    if isinstance(e, dict) and e.get('name'):
-        return e['name']
-    # 2) надёжный fallback: по loss_reason_id через справочник причин
-    lr = lead.get('loss_reason_id')
-    if lr and loss_map:
-        return loss_map.get(str(lr), '')
-    return ''
-
-
-def fetch_loss_reasons():
-    """Справочник причин отказа: {id: name}. Пагинация по _links.next со страховочным лимитом."""
-    out = {}
-    url = AMO_BASE_URL + '/api/v4/leads/loss_reasons'
-    params = {'limit': 250}
-    first = True
-    guard = 0
-    while url and guard < 50:
-        guard += 1
-        data = amo_get(url, params if first else None)
-        first = False
-        if not data:
-            break
-        for it in ((data.get('_embedded') or {}).get('loss_reasons') or []):
-            out[str(it['id'])] = it.get('name') or ''
-        url = ((data.get('_links') or {}).get('next') or {}).get('href')
-        if url:
-            time.sleep(0.2)
-    return out
-
-
 def chunked(seq, size):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
@@ -438,7 +404,7 @@ def sheets_values():
 #  Основная логика
 # ============================================================
 
-def build_row(lead, user_map, pipeline_map, status_map, pipeline_status_map, loss_map=None):
+def build_row(lead, user_map, pipeline_map, status_map, pipeline_status_map):
     main_contact_id = get_main_contact_id(lead)
     responsible_id = str(lead.get('responsible_user_id') or '')
     created_by = str(lead.get('created_by') or '')
@@ -523,7 +489,7 @@ def build_row(lead, user_map, pipeline_map, status_map, pipeline_status_map, los
         'Сумма доплаты': get_lead_field(lead, 'Сумма доплаты'),
         'Способ оплаты': get_lead_field(lead, 'Способ оплаты'),
 
-        'Причина отказа': get_loss_reason_name(lead, loss_map),   # имя причины отказа
+        'Причина отказа': get_lead_field(lead, 'Причина отказа'),   # кастомное поле-список на сделке
 
         'Рабочий телефон (контакт)': '',
         'tg_username (контакт)': '',
@@ -609,8 +575,7 @@ def main():
             sid = str(s['id'])
             status_map[sid] = s.get('name') or ''
             pipeline_status_map[f"{pid}:{sid}"] = s.get('name') or ''
-    loss_map = fetch_loss_reasons()
-    print(f"  пользователей: {len(users)}, воронок: {len(pipelines)}, этапов: {len(status_map)}, причин отказа: {len(loss_map)}")
+    print(f"  пользователей: {len(users)}, воронок: {len(pipelines)}, этапов: {len(status_map)}")
 
     # --- сделки ---
     print("Тяну сделки...")
@@ -619,7 +584,7 @@ def main():
         'filter[created_at][from]': date_from_ts,
         'filter[created_at][to]': date_to_ts,
         'order[created_at]': 'asc',
-        'with': 'contacts,loss_reason',
+        'with': 'contacts',
     }
     for i, pid in enumerate(PIPELINE_IDS):
         params[f'filter[pipeline_id][{i}]'] = pid
@@ -634,7 +599,7 @@ def main():
             continue
         if int(lead.get('pipeline_id') or 0) not in allowed:
             continue
-        rows.append(build_row(lead, user_map, pipeline_map, status_map, pipeline_status_map, loss_map))
+        rows.append(build_row(lead, user_map, pipeline_map, status_map, pipeline_status_map))
     filled_lr = sum(1 for r in rows if r.get('Причина отказа'))
     print(f"  строк после фильтра: {len(rows)} (из них с причиной отказа: {filled_lr})")
 
