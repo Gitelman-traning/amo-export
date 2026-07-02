@@ -325,17 +325,23 @@ def get_loss_reason_name(lead, loss_map=None):
 
 
 def fetch_loss_reasons():
-    """Справочник причин отказа: {id: name}. Нужен, т.к. with=loss_reason не всегда отдаёт имя."""
-    out, page = {}, 1
-    while True:
-        data = amo_get('/api/v4/leads/loss_reasons', {'limit': 250, 'page': page})
-        items = (data.get('_embedded') or {}).get('loss_reasons') or []
-        if not items:
+    """Справочник причин отказа: {id: name}. Пагинация по _links.next со страховочным лимитом."""
+    out = {}
+    url = AMO_BASE_URL + '/api/v4/leads/loss_reasons'
+    params = {'limit': 250}
+    first = True
+    guard = 0
+    while url and guard < 50:
+        guard += 1
+        data = amo_get(url, params if first else None)
+        first = False
+        if not data:
             break
-        for it in items:
+        for it in ((data.get('_embedded') or {}).get('loss_reasons') or []):
             out[str(it['id'])] = it.get('name') or ''
-        page += 1
-        time.sleep(0.2)
+        url = ((data.get('_links') or {}).get('next') or {}).get('href')
+        if url:
+            time.sleep(0.2)
     return out
 
 
