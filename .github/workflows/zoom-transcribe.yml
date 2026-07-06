@@ -1,0 +1,23 @@
+name: Транскрибация зумов
+
+on:
+  # Запуск приходит извне (cron-job.org → GitHub API), плюс ручной из UI.
+  workflow_dispatch:
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120      # скачивание mp4 + Deepgram по нескольким записям может быть долгим
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python zoom_transcribe.py
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          DEEPGRAM_TOKEN: ${{ secrets.DEEPGRAM_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
