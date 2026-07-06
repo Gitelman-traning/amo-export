@@ -22,6 +22,7 @@ import tempfile
 
 import requests
 from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
 
 # ============================================================
@@ -48,15 +49,12 @@ MAX_PER_RUN = 21        # максимум записей за прогон (≈
 APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "").strip()
 DEEPGRAM_TOKEN = os.environ.get("DEEPGRAM_TOKEN", "").strip()
 GOOGLE_SA_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+# OAuth реального пользователя (gitelmanteam1) — для СОЗДАНИЯ Google Docs (у сервис-аккаунта нет Drive)
+GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+GOOGLE_OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+GOOGLE_OAUTH_REFRESH_TOKEN = os.environ.get("GOOGLE_OAUTH_REFRESH_TOKEN", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/documents",
-    "https://www.googleapis.com/auth/drive",
-]
-
 
 # ============================================================
 #  Хелперы
@@ -216,11 +214,18 @@ def deepgram_transcribe(path):
 
 def google_clients():
     import json
-    info = json.loads(GOOGLE_SA_JSON)
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    sheets = build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets().values()
-    docs = build('docs', 'v1', credentials=creds, cache_discovery=False)
-    drive = build('drive', 'v3', credentials=creds, cache_discovery=False)
+    # таблицы — сервис-аккаунт (у него есть доступ к «маркетинг»)
+    sa = Credentials.from_service_account_info(
+        json.loads(GOOGLE_SA_JSON), scopes=['https://www.googleapis.com/auth/spreadsheets'])
+    sheets = build('sheets', 'v4', credentials=sa, cache_discovery=False).spreadsheets().values()
+    # доки — OAuth реального пользователя (у сервис-аккаунта нет Drive для создания файлов)
+    oauth = UserCredentials(
+        None, refresh_token=GOOGLE_OAUTH_REFRESH_TOKEN,
+        client_id=GOOGLE_OAUTH_CLIENT_ID, client_secret=GOOGLE_OAUTH_CLIENT_SECRET,
+        token_uri='https://oauth2.googleapis.com/token',
+        scopes=['https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/drive.file'])
+    docs = build('docs', 'v1', credentials=oauth, cache_discovery=False)
+    drive = build('drive', 'v3', credentials=oauth, cache_discovery=False)
     return sheets, docs, drive
 
 
@@ -253,7 +258,10 @@ def create_doc(docs, drive, title, text):
 
 def main():
     missing = [n for n, v in [('APIFY_TOKEN', APIFY_TOKEN), ('DEEPGRAM_TOKEN', DEEPGRAM_TOKEN),
-                              ('GOOGLE_SERVICE_ACCOUNT_JSON', GOOGLE_SA_JSON)] if not v]
+                              ('GOOGLE_SERVICE_ACCOUNT_JSON', GOOGLE_SA_JSON),
+                              ('GOOGLE_OAUTH_CLIENT_ID', GOOGLE_OAUTH_CLIENT_ID),
+                              ('GOOGLE_OAUTH_CLIENT_SECRET', GOOGLE_OAUTH_CLIENT_SECRET),
+                              ('GOOGLE_OAUTH_REFRESH_TOKEN', GOOGLE_OAUTH_REFRESH_TOKEN)] if not v]
     if missing:
         print("ОШИБКА: нет переменных окружения: " + ", ".join(missing))
         sys.exit(1)
