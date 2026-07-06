@@ -3,6 +3,11 @@ name: Транскрибация зумов
 on:
   # Запуск приходит извне (cron-job.org → GitHub API), плюс ручной из UI.
   workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Лимит записей за прогон (пусто = 21). Для теста поставь 1-2.'
+        required: false
+        default: ''
 
 jobs:
   transcribe:
@@ -24,3 +29,4 @@ jobs:
           GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MAX_PER_RUN: ${{ inputs.limit }}
