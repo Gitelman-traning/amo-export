@@ -41,6 +41,8 @@ USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 POLL_INTERVAL = 60      # пауза между опросами статуса Apify, сек
 MAX_POLLS = 30          # максимум опросов на одну запись (30 мин), потом пропуск
+MAX_PER_RUN = 21        # максимум записей за прогон (≈2 дневные нормы) — защита от таймаута;
+                        # берём НОВЕЙШИЕ по «Дата Диагностика проведена», старый бэклог не грызём
 
 # ---- Секреты из окружения ----
 APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "").strip()
@@ -87,6 +89,16 @@ def strip_code_prefix(s):
     s = re.sub(r'^[:\-–—\s]+', '', s)
     s = re.sub(r"[)\]'»]+$", '', s)
     return s.strip()
+
+
+def diag_sort_key(s):
+    """Дата вида dd.mm.yy(yy) -> целое yyyymmdd для сортировки (0 если не распарсилось)."""
+    m = re.search(r'(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})', str(s or ''))
+    if not m:
+        return 0
+    d, mo, y = int(m.group(1)), int(m.group(2)), m.group(3)
+    y = int('20' + y) if len(y) == 2 else int(y)
+    return y * 10000 + mo * 100 + d
 
 
 def parse_row(zoom_row):
@@ -281,9 +293,19 @@ def main():
             'first_name': zr.get('Основной контакт') or '',
             'share_url': parsed['share_url'], 'passcode': parsed['passcode'],
             'zoom_share_url': parsed['share_url'], 'zoom_passcode': parsed['passcode'],
+            '_diag': diag_sort_key(zr.get('Дата Диагностика проведена')),
         })
 
-    print(f"Строк ZOOM: {len(zoom_rows)}, уже готово: {len(done)}, к обработке: {len(pending)}")
+    # новейшие сначала, затем ограничиваем размер прогона
+    pending.sort(key=lambda x: x['_diag'], reverse=True)
+    total_pending = len(pending)
+    deferred = 0
+    if total_pending > MAX_PER_RUN:
+        deferred = total_pending - MAX_PER_RUN
+        pending = pending[:MAX_PER_RUN]
+
+    print(f"Строк ZOOM: {len(zoom_rows)}, уже готово: {len(done)}, в очереди: {total_pending}, "
+          f"беру за прогон: {len(pending)}" + (f", отложено: {deferred}" if deferred else ""))
     if not pending:
         return {'ok': 0, 'fail': 0, 'total': 0}
 
@@ -350,17 +372,19 @@ def main():
                 except Exception:
                     pass
 
-    print(f"ГОТОВО. Обработано: {ok}, ошибок: {fail}, всего в очереди: {len(pending)}")
-    return {'ok': ok, 'fail': fail, 'total': len(pending)}
+    print(f"ГОТОВО. Обработано: {ok}, ошибок: {fail} (за прогон {len(pending)}, "
+          f"в очереди {total_pending}, отложено {deferred})")
+    return {'ok': ok, 'fail': fail, 'total': len(pending), 'queue': total_pending, 'deferred': deferred}
 
 
 if __name__ == '__main__':
     try:
         s = main()
         if s['total'] > 0:
+            tail = f", отложено на след. прогоны: {s['deferred']}" if s.get('deferred') else ""
             send_telegram(
                 "✅ Транскрибация зумов\n"
-                f"Обработано: {s['ok']}, ошибок: {s['fail']} (в очереди было {s['total']})"
+                f"Обработано: {s['ok']}, ошибок: {s['fail']} (в очереди {s.get('queue', s['total'])}{tail})"
                 + run_url_line()
             )
     except Exception as e:
