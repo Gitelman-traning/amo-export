@@ -390,10 +390,11 @@ if __name__ == '__main__':
     try:
         s = main()
         if s['total'] > 0:
-            tail = f", отложено на след. прогоны: {s['deferred']}" if s.get('deferred') else ""
+            tail = f"\nОсталось на следующий прогон: {s['deferred']}" if s.get('deferred') else ""
             send_telegram(
                 "✅ Транскрибация зумов\n"
-                f"Обработано: {s['ok']}, ошибок: {s['fail']} (в очереди {s.get('queue', s['total'])}{tail})"
+                f"Обработано: {s['ok']}, ошибок: {s['fail']}\n"
+                f"Всего было в очереди: {s.get('queue', s['total'])}{tail}"
                 + run_url_line()
             )
     except Exception as e:
