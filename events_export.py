@@ -1,0 +1,558 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Выгрузка ленты событий amoCRM (Аналитика → Список событий) в Google Sheets.
+
+Что делает:
+  1. Тянет события из /api/v4/events за период (по умолчанию — текущий месяц по Москве).
+  2. Тянет справочники: пользователи, воронки/этапы, кастомные поля (сделки/контакты/компании).
+  3. Расшифровывает «Значение до» / «Значение после» в человекочитаемый вид.
+  4. Пишет всё на отдельный лист месячной таблицы (SPREADSHEET_ID).
+
+Запуск:
+  python events_export.py                # текущий месяц
+  PROBE=1 python events_export.py        # разведка: листы таблицы + сырой JSON по каждому типу события
+  DRY_RUN=1 python events_export.py      # посчитать, но в таблицу не писать
+
+Переменные окружения: AMO_TOKEN, GOOGLE_SERVICE_ACCOUNT_JSON, SPREADSHEET_ID,
+                      TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID (необязательно).
+"""
+
+import os
+import sys
+import json
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import requests
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+
+# ============================================================
+#  НАСТРОЙКИ
+# ============================================================
+
+AMO_BASE_URL = "https://pavelgitelman.amocrm.ru"
+
+# Таблица назначения — та же месячная, что и у остальных выгрузок (GitHub → Variables).
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "").strip() or "1UVN3nLBQ2YEg05mC0B-0tCYAgMXspVj2y2ED66hoXgg"
+SHEET_NAME = os.environ.get("SHEET_NAME", "").strip() or "События"
+
+# Период. По умолчанию — с 1-го числа текущего месяца по «сейчас» (Москва).
+# Можно переопределить руками: DATE_FROM/DATE_TO в формате ДД.ММ.ГГГГ.
+DATE_FROM = os.environ.get("DATE_FROM", "").strip()
+DATE_TO = os.environ.get("DATE_TO", "").strip()
+
+TIMEZONE = "Europe/Moscow"
+MSK = ZoneInfo(TIMEZONE)
+
+AMO_PAGE_LIMIT = 100      # у /api/v4/events максимум 100 на страницу
+REQUEST_INTERVAL = 0.25   # пауза между запросами к amo (лимит ~7 rps)
+MAX_PAGES = 5000          # предохранитель от бесконечного цикла
+SHEETS_CHUNK = 5000       # по столько строк пишем в таблицу за один запрос
+
+# ---- Секреты / режимы ----
+AMO_TOKEN = os.environ.get("AMO_TOKEN", "").strip()
+if AMO_TOKEN[:7].lower() == "bearer ":
+    AMO_TOKEN = AMO_TOKEN[7:].strip()
+GOOGLE_SA_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+PROBE = os.environ.get("PROBE", "").strip().lower() in ("1", "true", "yes")
+
+COLUMNS = [
+    'Дата', 'Автор', 'Объект', 'Название', 'Событие',
+    'Значение до', 'Значение после', 'Ссылка', 'ID объекта', 'Тип события',
+]
+
+# Тип сущности → как называется в интерфейсе
+ENTITY_RU = {
+    'lead': 'Сделка',
+    'contact': 'Контакт',
+    'company': 'Компания',
+    'customer': 'Покупатель',
+    'catalog_element': 'Элемент списка',
+    'task': 'Задача',
+}
+
+# Раздел ссылки на карточку сущности
+ENTITY_URL = {
+    'lead': 'leads/detail',
+    'contact': 'contacts/detail',
+    'company': 'companies/detail',
+    'customer': 'customers/detail',
+}
+
+# Код типа события → название как в интерфейсе amo.
+# Если тип не найден — в таблицу попадёт сам код (данные не теряем).
+EVENT_RU = {
+    'lead_added': 'Новая сделка',
+    'lead_deleted': 'Сделка удалена',
+    'lead_restored': 'Сделка восстановлена',
+    'lead_status_changed': 'Изменение этапа продажи',
+    'lead_linked': 'Сделка привязана',
+    'lead_unlinked': 'Сделка отвязана',
+    'contact_added': 'Новый контакт',
+    'contact_deleted': 'Контакт удалён',
+    'contact_restored': 'Контакт восстановлен',
+    'contact_linked': 'Контакт привязан',
+    'contact_unlinked': 'Контакт отвязан',
+    'company_added': 'Новая компания',
+    'company_deleted': 'Компания удалена',
+    'company_restored': 'Компания восстановлена',
+    'company_linked': 'Компания привязана',
+    'company_unlinked': 'Компания отвязана',
+    'customer_added': 'Новый покупатель',
+    'customer_deleted': 'Покупатель удалён',
+    'customer_status_changed': 'Изменение этапа покупателя',
+    'entity_responsible_changed': 'Смена ответственного',
+    'entity_tag_added': 'Добавлен тег',
+    'entity_tag_deleted': 'Удалён тег',
+    'entity_linked': 'Привязка',
+    'entity_unlinked': 'Отвязка',
+    'entity_merged': 'Объединение',
+    'custom_field_value_changed': 'Изменение поля',
+    'sale_field_changed': 'Изменение бюджета',
+    'name_field_changed': 'Изменение названия',
+    'ltv_field_changed': 'Изменение LTV',
+    'common_note_added': 'Новое примечание',
+    'common_note_deleted': 'Примечание удалено',
+    'attachment_note_added': 'Добавлен файл',
+    'service_note_added': 'Системное примечание',
+    'site_visit_note_added': 'Визит на сайт',
+    'geo_note_added': 'Геометка',
+    'targeting_in_note_added': 'Таргетинг',
+    'message_to_cashier_note_added': 'Сообщение кассиру',
+    'task_added': 'Новая задача',
+    'task_deleted': 'Задача удалена',
+    'task_completed': 'Задача выполнена',
+    'task_deadline_changed': 'Изменён срок задачи',
+    'task_type_changed': 'Изменён тип задачи',
+    'task_text_changed': 'Изменён текст задачи',
+    'task_result_added': 'Результат по задаче',
+    'incoming_call': 'Входящий звонок',
+    'outgoing_call': 'Исходящий звонок',
+    'incoming_chat_message': 'Входящее сообщение',
+    'outgoing_chat_message': 'Исходящее сообщение',
+    'incoming_sms': 'Входящее SMS',
+    'outgoing_sms': 'Исходящее SMS',
+    'robot_replied': 'Ответ робота',
+    'nps_rate_added': 'Оценка NPS',
+    'link_followed': 'Переход по ссылке',
+    'transaction_added': 'Добавлена покупка',
+    'intent_identified': 'Определено намерение',
+}
+
+
+# ============================================================
+#  Хелперы
+# ============================================================
+
+def period_bounds():
+    """Границы периода в unix-времени (Москва). По умолчанию — текущий месяц."""
+    now = datetime.now(MSK)
+    if DATE_FROM:
+        d = datetime.strptime(DATE_FROM, '%d.%m.%Y')
+        start = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=MSK)
+    else:
+        start = datetime(now.year, now.month, 1, 0, 0, 0, tzinfo=MSK)
+    if DATE_TO:
+        d = datetime.strptime(DATE_TO, '%d.%m.%Y')
+        end = datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=MSK)
+    else:
+        end = now
+    return int(start.timestamp()), int(end.timestamp()), start, end
+
+
+def fmt_dt(ts):
+    if ts in (None, '', 0, '0'):
+        return ''
+    try:
+        return datetime.fromtimestamp(int(ts), tz=MSK).strftime('%d.%m.%Y %H:%M')
+    except (TypeError, ValueError):
+        return ''
+
+
+def safe_cell(v):
+    """Экранируем формульную инъекцию Google Sheets: текст, начинающийся с =,+,-,@."""
+    if v is None:
+        return ''
+    if isinstance(v, str) and v[:1] in ('=', '+', '-', '@'):
+        return "'" + v
+    return v
+
+
+def send_telegram(text):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram-отбивка пропущена (нет TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).")
+        return
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_web_page_preview": True},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"Telegram не отправлен ({r.status_code}): {r.text[:200]}")
+    except Exception as ex:
+        print(f"Telegram ошибка: {ex}")
+
+
+def run_url_line():
+    server = os.environ.get("GITHUB_SERVER_URL", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    return f"\nЛог: {server}/{repo}/actions/runs/{run_id}" if (server and repo and run_id) else ""
+
+
+# ============================================================
+#  amoCRM
+# ============================================================
+
+def amo_get(path, params=None):
+    url = path if path.startswith('http') else AMO_BASE_URL + path
+    headers = {
+        'Authorization': f'Bearer {AMO_TOKEN}',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    }
+    for attempt in range(5):
+        r = requests.get(url, headers=headers, params=params, timeout=90)
+        if r.status_code == 204:
+            return {}
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code in (429, 500, 502, 503, 504):
+            wait = 2 ** attempt
+            print(f"  amo {r.status_code}, повтор через {wait}с...")
+            time.sleep(wait)
+            continue
+        raise RuntimeError(f"amoCRM {r.status_code}: {r.text[:300]} ({url})")
+    raise RuntimeError(f"amoCRM: не удалось получить {url}")
+
+
+def fetch_events(ts_from, ts_to):
+    """Все события за период. Пагинация — по _links.next (у events она надёжнее page)."""
+    out = []
+    params = {
+        'limit': AMO_PAGE_LIMIT,
+        'filter[created_at][from]': ts_from,
+        'filter[created_at][to]': ts_to,
+        'with': 'contact_name,lead_name,company_name,customer_name,catalog_element_name',
+    }
+    url, page = '/api/v4/events', 0
+    while url and page < MAX_PAGES:
+        data = amo_get(url, params if page == 0 else None)
+        evs = (data.get('_embedded') or {}).get('events') or []
+        if not evs:
+            break
+        out.extend(evs)
+        page += 1
+        if page % 20 == 0:
+            print(f"  ...страница {page}, событий получено: {len(out)}")
+        url = ((data.get('_links') or {}).get('next') or {}).get('href')
+        time.sleep(REQUEST_INTERVAL)
+    return out
+
+
+def fetch_users():
+    out, page = [], 1
+    while page <= 10:
+        data = amo_get('/api/v4/users', {'limit': 250, 'page': page})
+        us = (data.get('_embedded') or {}).get('users') or []
+        if not us:
+            break
+        out.extend(us)
+        page += 1
+        time.sleep(REQUEST_INTERVAL)
+    return out
+
+
+def fetch_custom_fields(entity):
+    """Кастомные поля сущности: id → {name, enums{enum_id: value}}."""
+    out, page = {}, 1
+    while page <= 20:
+        try:
+            data = amo_get(f'/api/v4/{entity}/custom_fields', {'limit': 250, 'page': page})
+        except RuntimeError as ex:
+            print(f"  справочник полей {entity}: пропускаю ({str(ex)[:80]})")
+            break
+        fs = (data.get('_embedded') or {}).get('custom_fields') or []
+        if not fs:
+            break
+        for f in fs:
+            enums = {}
+            for e in (f.get('enums') or []):
+                enums[str(e.get('id'))] = e.get('value')
+            out[str(f.get('id'))] = {'name': f.get('name') or '', 'enums': enums}
+        page += 1
+        time.sleep(REQUEST_INTERVAL)
+    return out
+
+
+def build_context():
+    """Справочники для расшифровки значений."""
+    users = fetch_users()
+    user_map = {str(u['id']): (u.get('name') or '') for u in users}
+    user_map['0'] = 'Система'
+
+    pipelines = (amo_get('/api/v4/leads/pipelines').get('_embedded') or {}).get('pipelines') or []
+    pipe_name, status_name = {}, {}
+    for p in pipelines:
+        pipe_name[str(p['id'])] = p.get('name') or ''
+        for s in ((p.get('_embedded') or {}).get('statuses') or []):
+            status_name[str(s['id'])] = s.get('name') or ''
+
+    fields = {}
+    for ent in ('leads', 'contacts', 'companies'):
+        fields.update(fetch_custom_fields(ent))
+
+    print(f"Справочники: пользователей {len(user_map)}, воронок {len(pipe_name)}, "
+          f"этапов {len(status_name)}, кастомных полей {len(fields)}")
+    return {'users': user_map, 'pipes': pipe_name, 'statuses': status_name, 'fields': fields}
+
+
+# ============================================================
+#  Расшифровка значений события
+# ============================================================
+
+def _plain(v):
+    """Достаём осмысленный текст из неизвестной структуры, ничего не теряя."""
+    if v is None:
+        return ''
+    if isinstance(v, (str, int, float)):
+        return str(v)
+    if isinstance(v, list):
+        return ', '.join(x for x in (_plain(i) for i in v) if x)
+    if isinstance(v, dict):
+        for key in ('name', 'text', 'value', 'title'):
+            if v.get(key) not in (None, ''):
+                return str(v[key])
+        return json.dumps(v, ensure_ascii=False)
+    return str(v)
+
+
+def decode_wrapper(key, val, ctx):
+    """Одна обёртка внутри value_before/value_after → строка для таблицы."""
+    if key == 'lead_status':
+        sid = str((val or {}).get('id') or '')
+        pid = str((val or {}).get('pipeline_id') or '')
+        status = ctx['statuses'].get(sid) or sid
+        pipe = ctx['pipes'].get(pid) or ''
+        return f"{pipe} / {status}" if pipe else status
+
+    if key in ('responsible_user', 'created_user'):
+        uid = str((val or {}).get('id') or '')
+        return ctx['users'].get(uid) or uid
+
+    if key == 'custom_field_value':
+        v = val or {}
+        fid = str(v.get('field_id') or '')
+        meta = ctx['fields'].get(fid) or {}
+        fname = meta.get('name') or f"поле {fid}"
+        raw = ''
+        if v.get('enum_id') not in (None, ''):
+            raw = (meta.get('enums') or {}).get(str(v['enum_id'])) or str(v['enum_id'])
+        else:
+            for k in ('text_value', 'value', 'text'):
+                if v.get(k) not in (None, ''):
+                    raw = _plain(v[k])
+                    break
+        return f"{fname}: {raw}" if raw else fname
+
+    if key in ('tags', 'tag'):
+        return _plain(val)
+
+    if key in ('sale', 'price', 'ltv'):
+        if isinstance(val, dict):
+            for k in ('sale', 'price', 'ltv', 'value'):
+                if val.get(k) not in (None, ''):
+                    return str(val[k])
+        return _plain(val)
+
+    # note / task / message / name / прочее — универсально
+    return _plain(val)
+
+
+def decode_value(items, ctx):
+    if not items:
+        return ''
+    parts = []
+    for it in items:
+        if isinstance(it, dict):
+            for key, val in it.items():
+                s = decode_wrapper(key, val, ctx)
+                if s:
+                    parts.append(s)
+        else:
+            s = _plain(it)
+            if s:
+                parts.append(s)
+    return '; '.join(parts)
+
+
+def build_rows(events, ctx):
+    rows = []
+    for e in events:
+        etype = e.get('type') or ''
+        ent = e.get('entity_type') or ''
+        eid = e.get('entity_id')
+        embedded_entity = (e.get('_embedded') or {}).get('entity') or {}
+        link = f"{AMO_BASE_URL}/{ENTITY_URL[ent]}/{eid}" if ent in ENTITY_URL and eid else ''
+        rows.append({
+            'Дата': fmt_dt(e.get('created_at')),
+            'Автор': ctx['users'].get(str(e.get('created_by'))) or str(e.get('created_by') or ''),
+            'Объект': ENTITY_RU.get(ent, ent),
+            'Название': embedded_entity.get('name') or '',
+            'Событие': EVENT_RU.get(etype, etype),
+            'Значение до': decode_value(e.get('value_before'), ctx),
+            'Значение после': decode_value(e.get('value_after'), ctx),
+            'Ссылка': link,
+            'ID объекта': eid or '',
+            'Тип события': etype,
+        })
+    rows.sort(key=lambda r: r['Дата'], reverse=True)
+    return rows
+
+
+# ============================================================
+#  Google Sheets
+# ============================================================
+
+def sheets_service():
+    info = json.loads(GOOGLE_SA_JSON)
+    creds = Credentials.from_service_account_info(
+        info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
+    return build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets()
+
+
+def list_sheets(svc):
+    meta = svc.get(spreadsheetId=SPREADSHEET_ID,
+                   fields='properties.title,sheets.properties(title,sheetId)').execute()
+    return meta
+
+
+def ensure_sheet(svc, title):
+    meta = list_sheets(svc)
+    titles = [s['properties']['title'] for s in meta.get('sheets', [])]
+    if title not in titles:
+        svc.batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={'requests': [{'addSheet': {'properties': {'title': title}}}]},
+        ).execute()
+        print(f"Создал лист «{title}»")
+
+
+def write_sheet(svc, rows):
+    values = svc.values()
+    values.clear(spreadsheetId=SPREADSHEET_ID, range=f"'{SHEET_NAME}'").execute()
+    matrix = [COLUMNS] + [[safe_cell(r.get(c, '')) for c in COLUMNS] for r in rows]
+    for i in range(0, len(matrix), SHEETS_CHUNK):
+        chunk = matrix[i:i + SHEETS_CHUNK]
+        values.update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"'{SHEET_NAME}'!A{i + 1}",
+            valueInputOption='USER_ENTERED',
+            body={'values': chunk},
+        ).execute()
+        print(f"  записано строк: {min(i + SHEETS_CHUNK, len(matrix))}/{len(matrix)}")
+
+
+# ============================================================
+#  Разведка (PROBE)
+# ============================================================
+
+def probe(ts_from, ts_to):
+    """Печатает листы таблицы и сырой JSON по одному событию каждого типа."""
+    if GOOGLE_SA_JSON:
+        try:
+            meta = list_sheets(sheets_service())
+            print(f"\n=== ЛИСТЫ ТАБЛИЦЫ «{meta.get('properties', {}).get('title')}» ===")
+            for s in meta.get('sheets', []):
+                p = s['properties']
+                print(f"  gid={p['sheetId']}  «{p['title']}»")
+        except Exception as ex:
+            print(f"Не смог прочитать таблицу: {ex}")
+
+    print("\n=== ПРОБА СОБЫТИЙ (первые страницы) ===")
+    data = amo_get('/api/v4/events', {
+        'limit': AMO_PAGE_LIMIT,
+        'filter[created_at][from]': ts_from,
+        'filter[created_at][to]': ts_to,
+        'with': 'contact_name,lead_name,company_name,customer_name,catalog_element_name',
+    })
+    evs = (data.get('_embedded') or {}).get('events') or []
+    print(f"Событий на первой странице: {len(evs)}")
+
+    seen = {}
+    for e in evs:
+        seen.setdefault(e.get('type'), e)
+    print(f"Типов на выборке: {len(seen)} — {', '.join(sorted(k for k in seen if k))}")
+    for t, e in sorted(seen.items(), key=lambda x: str(x[0])):
+        print(f"\n--- {t} ---")
+        print(json.dumps(e, ensure_ascii=False, indent=2)[:1200])
+
+
+# ============================================================
+#  main
+# ============================================================
+
+def main():
+    missing = [n for n, v in [('AMO_TOKEN', AMO_TOKEN)] if not v]
+    if not PROBE and not GOOGLE_SA_JSON:
+        missing.append('GOOGLE_SERVICE_ACCOUNT_JSON')
+    if missing:
+        print("ОШИБКА: нет переменных окружения: " + ", ".join(missing))
+        sys.exit(1)
+
+    ts_from, ts_to, d_from, d_to = period_bounds()
+    print(f"Период: {d_from.strftime('%d.%m.%Y %H:%M')} — {d_to.strftime('%d.%m.%Y %H:%M')} (МСК)")
+    print(f"Таблица: {SPREADSHEET_ID}, лист «{SHEET_NAME}»"
+          + (" [DRY_RUN]" if DRY_RUN else "") + (" [PROBE]" if PROBE else ""))
+
+    if PROBE:
+        probe(ts_from, ts_to)
+        return {'events': 0, 'from': d_from, 'to': d_to}
+
+    ctx = build_context()
+    events = fetch_events(ts_from, ts_to)
+    print(f"Событий получено: {len(events)}")
+
+    rows = build_rows(events, ctx)
+    authors = len({r['Автор'] for r in rows if r['Автор']})
+    print(f"Строк к записи: {len(rows)}, авторов: {authors}")
+
+    if DRY_RUN:
+        print("DRY_RUN — в таблицу ничего не писали.")
+        for r in rows[:10]:
+            print(f"  {r['Дата']} | {r['Автор']} | {r['Объект']} | {r['Событие']} | "
+                  f"{r['Значение до'][:40]} → {r['Значение после'][:40]}")
+        return {'events': len(rows), 'authors': authors, 'from': d_from, 'to': d_to}
+
+    svc = sheets_service()
+    ensure_sheet(svc, SHEET_NAME)
+    write_sheet(svc, rows)
+    print(f"ГОТОВО. Событий: {len(rows)}.")
+    return {'events': len(rows), 'authors': authors, 'from': d_from, 'to': d_to}
+
+
+if __name__ == '__main__':
+    try:
+        s = main()
+        if not DRY_RUN and not PROBE:
+            send_telegram(
+                f"✅ amoCRM события: выгружено\n"
+                f"Период: {s['from'].strftime('%d.%m.%Y')} — {s['to'].strftime('%d.%m.%Y')}\n"
+                f"Событий: {s['events']}, менеджеров: {s['authors']}\n"
+                f"Таблица: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
+                + run_url_line()
+            )
+    except Exception as e:
+        send_telegram(
+            f"❌ amoCRM события: выгрузка упала\n"
+            f"Ошибка: {type(e).__name__}: {str(e)[:300]}"
+            + run_url_line()
+        )
+        raise

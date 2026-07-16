@@ -1,0 +1,49 @@
+name: События amoCRM
+
+on:
+  # Запуск ручной из UI (при необходимости можно добавить в cron-job.org, как остальные).
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: 'Разведка: показать листы таблицы и сырые события (true/false)'
+        required: false
+        default: 'false'
+      dry_run:
+        description: 'Только проверка, без записи в таблицу (true/false)'
+        required: false
+        default: 'false'
+      sheet_name:
+        description: 'Название листа. Пусто = «События»'
+        required: false
+        default: ''
+      date_from:
+        description: 'Начало периода ДД.ММ.ГГГГ. Пусто = 1-е число текущего месяца'
+        required: false
+        default: ''
+      date_to:
+        description: 'Конец периода ДД.ММ.ГГГГ. Пусто = сегодня'
+        required: false
+        default: ''
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python events_export.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
+          PROBE: ${{ inputs.probe }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SHEET_NAME: ${{ inputs.sheet_name }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
