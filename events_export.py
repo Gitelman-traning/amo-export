@@ -63,6 +63,10 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 PROBE = os.environ.get("PROBE", "").strip().lower() in ("1", "true", "yes")
 
+# Только действия живых людей (как фильтр «Менеджеры» в интерфейсе amo).
+# Отсекает события ботов/интеграций (created_by = 0): salebot, utm-метки и прочий шум.
+MANAGERS_ONLY = (os.environ.get("MANAGERS_ONLY", "").strip().lower() or "true") in ("1", "true", "yes")
+
 COLUMNS = [
     'Дата', 'Автор', 'Объект', 'Название', 'Событие',
     'Значение до', 'Значение после', 'Ссылка', 'ID объекта', 'Тип события',
@@ -680,6 +684,18 @@ def main():
     ctx = build_context()
     events = fetch_events(ts_from, ts_to)
     print(f"Событий получено: {len(events)}")
+
+    by_author = {}
+    for e in events:
+        who = ctx['users'].get(str(e.get('created_by'))) or str(e.get('created_by'))
+        by_author[who] = by_author.get(who, 0) + 1
+    print("Событий по авторам:")
+    for who, cnt in sorted(by_author.items(), key=lambda x: -x[1]):
+        print(f"  {cnt:6d}  {who}")
+
+    if MANAGERS_ONLY:
+        events = [e for e in events if str(e.get('created_by') or '0') != '0']
+        print(f"Оставляю только действия менеджеров (без ботов): {len(events)}")
 
     print("Догружаю то, чего нет в самих событиях (тексты, названия):")
     ctx['tasks'] = fetch_tasks(events)

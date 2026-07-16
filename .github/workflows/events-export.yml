@@ -12,6 +12,10 @@ on:
         description: 'Только проверка, без записи в таблицу (true/false)'
         required: false
         default: 'false'
+      managers_only:
+        description: 'Только действия менеджеров, без ботов (true/false)'
+        required: false
+        default: 'true'
       sheet_name:
         description: 'Название листа. Пусто = «События»'
         required: false
@@ -44,6 +48,7 @@ jobs:
           SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
           PROBE: ${{ inputs.probe }}
           DRY_RUN: ${{ inputs.dry_run }}
+          MANAGERS_ONLY: ${{ inputs.managers_only }}
           SHEET_NAME: ${{ inputs.sheet_name }}
           DATE_FROM: ${{ inputs.date_from }}
           DATE_TO: ${{ inputs.date_to }}
