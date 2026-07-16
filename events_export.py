@@ -619,7 +619,17 @@ def probe(ts_from, ts_to):
             print(f"\n=== ЛИСТЫ ТАБЛИЦЫ «{meta.get('properties', {}).get('title')}» ===")
             for s in meta.get('sheets', []):
                 p = s['properties']
-                print(f"  gid={p['sheetId']}  «{p['title']}»")
+                mark = ' <-- сюда пишем' if p['title'] == SHEET_NAME else ''
+                print(f"  gid={p['sheetId']}  «{p['title']}»{mark}")
+
+            # Что уже лежит на целевом листе — чтобы не затереть чужие данные.
+            cur = sheets_service().values().get(
+                spreadsheetId=SPREADSHEET_ID, range=f"'{SHEET_NAME}'!A1:J5").execute()
+            vals = cur.get('values') or []
+            print(f"\nЛист «{SHEET_NAME}» сейчас: "
+                  + (f"{len(vals)} строк в A1:J5" if vals else "ПУСТО"))
+            for v in vals:
+                print(f"  {v}")
         except Exception as ex:
             print(f"Не смог прочитать таблицу: {ex}")
 
