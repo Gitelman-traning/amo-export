@@ -16,6 +16,10 @@ on:
         description: 'Только действия менеджеров, без ботов (true/false)'
         required: false
         default: 'true'
+      events_scope:
+        description: 'key = только смысловые типы, all = вообще все'
+        required: false
+        default: 'key'
       sheet_name:
         description: 'Название листа. Пусто = «События»'
         required: false
@@ -49,6 +53,7 @@ jobs:
           PROBE: ${{ inputs.probe }}
           DRY_RUN: ${{ inputs.dry_run }}
           MANAGERS_ONLY: ${{ inputs.managers_only }}
+          EVENTS_SCOPE: ${{ inputs.events_scope }}
           SHEET_NAME: ${{ inputs.sheet_name }}
           DATE_FROM: ${{ inputs.date_from }}
           DATE_TO: ${{ inputs.date_to }}

@@ -49,7 +49,7 @@ TIMEZONE = "Europe/Moscow"
 MSK = ZoneInfo(TIMEZONE)
 
 AMO_PAGE_LIMIT = 100      # у /api/v4/events максимум 100 на страницу
-REQUEST_INTERVAL = 0.25   # пауза между запросами к amo (лимит ~7 rps)
+REQUEST_INTERVAL = 0.15   # пауза между запросами к amo (лимит ~7 rps)
 MAX_PAGES = 5000          # предохранитель от бесконечного цикла
 SHEETS_CHUNK = 5000       # по столько строк пишем в таблицу за один запрос
 
@@ -66,6 +66,21 @@ PROBE = os.environ.get("PROBE", "").strip().lower() in ("1", "true", "yes")
 # Только действия живых людей (как фильтр «Менеджеры» в интерфейсе amo).
 # Отсекает события ботов/интеграций (created_by = 0): salebot, utm-метки и прочий шум.
 MANAGERS_ONLY = (os.environ.get("MANAGERS_ONLY", "").strip().lower() or "true") in ("1", "true", "yes")
+
+# Какие типы событий оставлять:
+#   key  — только смысловые: этапы, ответственные, поля, примечания, звонки, задачи, теги, бюджет, имя
+#   all  — вообще все типы (включая привязки, чат-сообщения, беседы — сильно больше строк)
+EVENTS_SCOPE = (os.environ.get("EVENTS_SCOPE", "").strip().lower() or "key")
+
+# Смысловые типы (кастомные поля добавляются отдельно регуляркой CF_TYPE_RE).
+KEY_TYPES = {
+    'lead_status_changed', 'entity_responsible_changed',
+    'lead_added', 'contact_added', 'company_added',
+    'common_note_added', 'incoming_call', 'outgoing_call',
+    'task_added', 'task_completed', 'task_result_added', 'task_deadline_changed',
+    'name_field_changed', 'sale_field_changed',
+    'entity_tag_added', 'entity_tag_deleted',
+}
 
 COLUMNS = [
     'Дата', 'Автор', 'Объект', 'Название', 'Событие',
@@ -576,26 +591,53 @@ def sheets_service():
 
 
 def list_sheets(svc):
-    meta = svc.get(spreadsheetId=SPREADSHEET_ID,
-                   fields='properties.title,sheets.properties(title,sheetId)').execute()
+    meta = svc.get(
+        spreadsheetId=SPREADSHEET_ID,
+        fields='properties.title,sheets.properties(title,sheetId,gridProperties)').execute()
     return meta
 
 
-def ensure_sheet(svc, title):
+def ensure_sheet(svc, title, need_rows):
+    """Создаёт лист, если нет, и расширяет сетку до нужного числа строк/колонок.
+    По умолчанию у листа лимит 1000 строк — при большем объёме запись падает с 400."""
     meta = list_sheets(svc)
-    titles = [s['properties']['title'] for s in meta.get('sheets', [])]
-    if title not in titles:
+    props = {s['properties']['title']: s['properties'] for s in meta.get('sheets', [])}
+    need_cols = len(COLUMNS)
+
+    if title not in props:
         svc.batchUpdate(
             spreadsheetId=SPREADSHEET_ID,
-            body={'requests': [{'addSheet': {'properties': {'title': title}}}]},
+            body={'requests': [{'addSheet': {'properties': {
+                'title': title,
+                'gridProperties': {'rowCount': need_rows, 'columnCount': need_cols},
+            }}}]},
         ).execute()
-        print(f"Создал лист «{title}»")
+        print(f"Создал лист «{title}» ({need_rows}×{need_cols})")
+        return
+
+    p = props[title]
+    grid = p.get('gridProperties') or {}
+    cur_rows = grid.get('rowCount') or 0
+    cur_cols = grid.get('columnCount') or 0
+    if cur_rows < need_rows or cur_cols < need_cols:
+        svc.batchUpdate(
+            spreadsheetId=SPREADSHEET_ID,
+            body={'requests': [{'updateSheetProperties': {
+                'properties': {'sheetId': p['sheetId'], 'gridProperties': {
+                    'rowCount': max(cur_rows, need_rows),
+                    'columnCount': max(cur_cols, need_cols),
+                }},
+                'fields': 'gridProperties.rowCount,gridProperties.columnCount',
+            }}]},
+        ).execute()
+        print(f"Расширил лист «{title}» до {max(cur_rows, need_rows)}×{max(cur_cols, need_cols)}")
 
 
 def write_sheet(svc, rows):
+    matrix = [COLUMNS] + [[safe_cell(r.get(c, '')) for c in COLUMNS] for r in rows]
+    ensure_sheet(svc, SHEET_NAME, len(matrix) + 100)
     values = svc.values()
     values.clear(spreadsheetId=SPREADSHEET_ID, range=f"'{SHEET_NAME}'").execute()
-    matrix = [COLUMNS] + [[safe_cell(r.get(c, '')) for c in COLUMNS] for r in rows]
     for i in range(0, len(matrix), SHEETS_CHUNK):
         chunk = matrix[i:i + SHEETS_CHUNK]
         values.update(
@@ -707,6 +749,11 @@ def main():
         events = [e for e in events if str(e.get('created_by') or '0') != '0']
         print(f"Оставляю только действия менеджеров (без ботов): {len(events)}")
 
+    if EVENTS_SCOPE == 'key':
+        events = [e for e in events
+                  if e.get('type') in KEY_TYPES or CF_TYPE_RE.match(str(e.get('type') or ''))]
+        print(f"Оставляю только ключевые типы событий: {len(events)}")
+
     print("Догружаю то, чего нет в самих событиях (тексты, названия):")
     ctx['tasks'] = fetch_tasks(events)
     ctx['notes'] = fetch_notes(events)
@@ -723,7 +770,6 @@ def main():
         return {'events': len(rows), 'authors': authors, 'from': d_from, 'to': d_to}
 
     svc = sheets_service()
-    ensure_sheet(svc, SHEET_NAME)
     write_sheet(svc, rows)
     print(f"ГОТОВО. Событий: {len(rows)}.")
     return {'events': len(rows), 'authors': authors, 'from': d_from, 'to': d_to}
