@@ -19,6 +19,7 @@
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -143,7 +144,14 @@ EVENT_RU = {
     'link_followed': 'Переход по ссылке',
     'transaction_added': 'Добавлена покупка',
     'intent_identified': 'Определено намерение',
+    'talk_created': 'Начата беседа',
+    'talk_closed': 'Беседа закрыта',
+    'talk_missed_event': 'Пропущенная беседа',
 }
+
+# Изменение кастомного поля приходит типом вида custom_field_1439087_value_changed —
+# ID поля зашит в сам тип события, поэтому вытаскиваем его регуляркой.
+CF_TYPE_RE = re.compile(r'^custom_field_(\d+)_value_changed$')
 
 
 # ============================================================
@@ -240,7 +248,6 @@ def fetch_events(ts_from, ts_to):
         'limit': AMO_PAGE_LIMIT,
         'filter[created_at][from]': ts_from,
         'filter[created_at][to]': ts_to,
-        'with': 'contact_name,lead_name,company_name,customer_name,catalog_element_name',
     }
     url, page = '/api/v4/events', 0
     while url and page < MAX_PAGES:
@@ -348,19 +355,30 @@ def decode_wrapper(key, val, ctx):
         return ctx['users'].get(uid) or uid
 
     if key == 'custom_field_value':
+        # Само значение amo кладёт в "text" (для списков там уже подставлено имя пункта).
         v = val or {}
-        fid = str(v.get('field_id') or '')
-        meta = ctx['fields'].get(fid) or {}
-        fname = meta.get('name') or f"поле {fid}"
-        raw = ''
+        for k in ('text', 'text_value', 'value'):
+            if v.get(k) not in (None, ''):
+                return _plain(v[k])
+        # На случай, если текста нет — расшифровываем enum_id по справочнику.
         if v.get('enum_id') not in (None, ''):
-            raw = (meta.get('enums') or {}).get(str(v['enum_id'])) or str(v['enum_id'])
-        else:
-            for k in ('text_value', 'value', 'text'):
-                if v.get(k) not in (None, ''):
-                    raw = _plain(v[k])
-                    break
-        return f"{fname}: {raw}" if raw else fname
+            meta = ctx['fields'].get(str(v.get('field_id') or '')) or {}
+            return (meta.get('enums') or {}).get(str(v['enum_id'])) or str(v['enum_id'])
+        return ''
+
+    if key == 'link':
+        # Привязка/отвязка: {"link": {"entity": {"type": "contact", "id": .., "name": ""}}}
+        ent = (val or {}).get('entity') or {}
+        label = ENTITY_RU.get(ent.get('type'), ent.get('type') or '')
+        name = ent.get('name') or ''
+        eid = ent.get('id') or ''
+        tail = name or (f"#{eid}" if eid else '')
+        return f"{label}: {tail}".strip(': ') if (label or tail) else ''
+
+    if key == 'message':
+        # {"message": {"id": "..", "origin": "pro.salebot", "talk_id": ..}} — текста нет,
+        # показываем источник канала.
+        return (val or {}).get('origin') or ''
 
     if key in ('tags', 'tag'):
         return _plain(val)
@@ -393,27 +411,63 @@ def decode_value(items, ctx):
     return '; '.join(parts)
 
 
-def build_rows(events, ctx):
+def event_label(etype, ctx):
+    """Название события как в интерфейсе. Для кастомных полей — с именем поля."""
+    m = CF_TYPE_RE.match(etype or '')
+    if m:
+        meta = ctx['fields'].get(m.group(1)) or {}
+        name = meta.get('name')
+        return f'Изменение поля "{name}"' if name else f'Изменение поля {m.group(1)}'
+    return EVENT_RU.get(etype, etype)
+
+
+def fetch_entity_names(events):
+    """Названия сущностей: API событий их не отдаёт, догружаем пачками по id."""
+    need = {}
+    for e in events:
+        ent, eid = e.get('entity_type'), e.get('entity_id')
+        if ent in ('lead', 'contact', 'company') and eid:
+            need.setdefault(ent, set()).add(eid)
+
+    names = {}
+    plural = {'lead': 'leads', 'contact': 'contacts', 'company': 'companies'}
+    for ent, ids in need.items():
+        ids = list(ids)
+        print(f"  названия: {ent} — {len(ids)} шт.")
+        for i in range(0, len(ids), 100):
+            chunk = ids[i:i + 100]
+            try:
+                data = amo_get(f'/api/v4/{plural[ent]}', {'limit': 250, 'filter[id][]': chunk})
+            except RuntimeError as ex:
+                print(f"    пропускаю пачку ({str(ex)[:80]})")
+                continue
+            for x in ((data.get('_embedded') or {}).get(plural[ent]) or []):
+                names[f"{ent}:{x['id']}"] = x.get('name') or ''
+            time.sleep(REQUEST_INTERVAL)
+    return names
+
+
+def build_rows(events, ctx, names):
     rows = []
+    # Новые события сверху — как в интерфейсе amo.
+    events = sorted(events, key=lambda e: int(e.get('created_at') or 0), reverse=True)
     for e in events:
         etype = e.get('type') or ''
         ent = e.get('entity_type') or ''
         eid = e.get('entity_id')
-        embedded_entity = (e.get('_embedded') or {}).get('entity') or {}
         link = f"{AMO_BASE_URL}/{ENTITY_URL[ent]}/{eid}" if ent in ENTITY_URL and eid else ''
         rows.append({
             'Дата': fmt_dt(e.get('created_at')),
             'Автор': ctx['users'].get(str(e.get('created_by'))) or str(e.get('created_by') or ''),
             'Объект': ENTITY_RU.get(ent, ent),
-            'Название': embedded_entity.get('name') or '',
-            'Событие': EVENT_RU.get(etype, etype),
+            'Название': names.get(f"{ent}:{eid}", ''),
+            'Событие': event_label(etype, ctx),
             'Значение до': decode_value(e.get('value_before'), ctx),
             'Значение после': decode_value(e.get('value_after'), ctx),
             'Ссылка': link,
             'ID объекта': eid or '',
             'Тип события': etype,
         })
-    rows.sort(key=lambda r: r['Дата'], reverse=True)
     return rows
 
 
@@ -476,23 +530,41 @@ def probe(ts_from, ts_to):
         except Exception as ex:
             print(f"Не смог прочитать таблицу: {ex}")
 
-    print("\n=== ПРОБА СОБЫТИЙ (первые страницы) ===")
-    data = amo_get('/api/v4/events', {
+    pages = int(os.environ.get("PROBE_PAGES") or "30")
+    print(f"\n=== ПРОБА СОБЫТИЙ (до {pages} страниц) ===")
+    params = {
         'limit': AMO_PAGE_LIMIT,
         'filter[created_at][from]': ts_from,
         'filter[created_at][to]': ts_to,
-        'with': 'contact_name,lead_name,company_name,customer_name,catalog_element_name',
-    })
-    evs = (data.get('_embedded') or {}).get('events') or []
-    print(f"Событий на первой странице: {len(evs)}")
+    }
+    url, page, total = '/api/v4/events', 0, 0
+    seen, counts = {}, {}
+    while url and page < pages:
+        data = amo_get(url, params if page == 0 else None)
+        evs = (data.get('_embedded') or {}).get('events') or []
+        if not evs:
+            break
+        total += len(evs)
+        for e in evs:
+            t = e.get('type')
+            counts[t] = counts.get(t, 0) + 1
+            seen.setdefault(t, e)
+        page += 1
+        url = ((data.get('_links') or {}).get('next') or {}).get('href')
+        time.sleep(REQUEST_INTERVAL)
 
-    seen = {}
-    for e in evs:
-        seen.setdefault(e.get('type'), e)
-    print(f"Типов на выборке: {len(seen)} — {', '.join(sorted(k for k in seen if k))}")
+    print(f"Просмотрено событий: {total}, типов: {len(seen)}\n")
+    print("=== ЧАСТОТА ТИПОВ ===")
+    for t, c in sorted(counts.items(), key=lambda x: -x[1]):
+        known = 'OK ' if (t in EVENT_RU or CF_TYPE_RE.match(str(t))) else '?? '
+        print(f"  {known}{c:5d}  {t}")
+
+    print("\n=== ПРИМЕРЫ (только незнакомые/значимые) ===")
     for t, e in sorted(seen.items(), key=lambda x: str(x[0])):
+        if CF_TYPE_RE.match(str(t)) and t != next((k for k in seen if CF_TYPE_RE.match(str(k))), None):
+            continue  # кастомные поля показываем один раз — структура одинаковая
         print(f"\n--- {t} ---")
-        print(json.dumps(e, ensure_ascii=False, indent=2)[:1200])
+        print(json.dumps(e, ensure_ascii=False, indent=2)[:900])
 
 
 # ============================================================
@@ -520,7 +592,8 @@ def main():
     events = fetch_events(ts_from, ts_to)
     print(f"Событий получено: {len(events)}")
 
-    rows = build_rows(events, ctx)
+    names = fetch_entity_names(events)
+    rows = build_rows(events, ctx, names)
     authors = len({r['Автор'] for r in rows if r['Автор']})
     print(f"Строк к записи: {len(rows)}, авторов: {authors}")
 
