@@ -72,6 +72,21 @@ MANAGERS_ONLY = (os.environ.get("MANAGERS_ONLY", "").strip().lower() or "true") 
 #   all  — вообще все типы (включая привязки, чат-сообщения, беседы — сильно больше строк)
 EVENTS_SCOPE = (os.environ.get("EVENTS_SCOPE", "").strip().lower() or "key")
 
+# Чьи события выгружаем. Список имён как в amo, через запятую (env AUTHORS).
+# Пустой AUTHORS в окружении = этот список по умолчанию. Значение "all" = все авторы.
+# Фильтр уходит в amo (filter[created_by][]) — качаем только нужное, это в разы быстрее.
+DEFAULT_AUTHORS = [
+    'Евгений Кротов', 'Илья Огнев', 'Камилла Пацкевич', 'Мурад Мурзаев',
+    'Русакова Любовь', 'Ткачева Татьяна', 'Узянов Дмитрий',
+]
+_authors_env = os.environ.get("AUTHORS", "").strip()
+AUTHORS = ([] if _authors_env.lower() == 'all'
+           else [a.strip() for a in _authors_env.split(',') if a.strip()] or DEFAULT_AUTHORS)
+
+# Группировка: серия действий одного автора по одной сущности в пределах одного
+# календарного часа схлопывается в одну строку (последнее действие + счётчик).
+GROUP_HOURLY = (os.environ.get("GROUP_HOURLY", "").strip().lower() or "true") in ("1", "true", "yes")
+
 # Смысловые типы (кастомные поля добавляются отдельно регуляркой CF_TYPE_RE).
 KEY_TYPES = {
     'lead_status_changed', 'entity_responsible_changed',
@@ -84,7 +99,7 @@ KEY_TYPES = {
 
 COLUMNS = [
     'Дата', 'Автор', 'Объект', 'Название', 'Событие',
-    'Значение до', 'Значение после', 'Ссылка', 'ID объекта', 'Тип события',
+    'Значение до', 'Значение после', 'Действий за час', 'Ссылка', 'ID объекта', 'Тип события',
 ]
 
 # Тип сущности → как называется в интерфейсе
@@ -263,14 +278,17 @@ def amo_get(path, params=None):
     raise RuntimeError(f"amoCRM: не удалось получить {url}")
 
 
-def fetch_events(ts_from, ts_to):
-    """Все события за период. Пагинация — по _links.next (у events она надёжнее page)."""
+def fetch_events(ts_from, ts_to, creator_ids=None):
+    """События за период. Пагинация — по _links.next (у events она надёжнее page).
+    creator_ids — фильтр по авторам на стороне amo: качаем только их события."""
     out = []
     params = {
         'limit': AMO_PAGE_LIMIT,
         'filter[created_at][from]': ts_from,
         'filter[created_at][to]': ts_to,
     }
+    if creator_ids:
+        params['filter[created_by][]'] = list(creator_ids)
     url, page = '/api/v4/events', 0
     while url and page < MAX_PAGES:
         data = amo_get(url, params if page == 0 else None)
@@ -440,6 +458,40 @@ def decode_value(items, ctx):
     return '; '.join(parts)
 
 
+def resolve_author_ids(user_map, wanted):
+    """Имена менеджеров → их id в amo (без учёта регистра и крайних пробелов)."""
+    by_name = {}
+    for uid, name in user_map.items():
+        by_name.setdefault(str(name).strip().casefold(), uid)
+    ids, missing = [], []
+    for w in wanted:
+        uid = by_name.get(w.strip().casefold())
+        (ids if uid else missing).append(uid or w)
+    return ids, missing
+
+
+def group_hourly(events):
+    """Серия действий одного автора по одной сущности в пределах календарного часа →
+    одно событие (последнее по времени) с числом действий в '_grp'."""
+    groups = {}
+    for e in events:
+        ts = int(e.get('created_at') or 0)
+        key = (e.get('entity_type'), e.get('entity_id'), e.get('created_by'), ts // 3600)
+        g = groups.get(key)
+        if g is None:
+            groups[key] = {'event': e, 'count': 1}
+        else:
+            g['count'] += 1
+            if ts > int(g['event'].get('created_at') or 0):
+                g['event'] = e
+    out = []
+    for g in groups.values():
+        e = dict(g['event'])
+        e['_grp'] = g['count']
+        out.append(e)
+    return out
+
+
 def event_label(etype, ctx):
     """Название события как в интерфейсе. Для кастомных полей — с именем поля."""
     m = CF_TYPE_RE.match(etype or '')
@@ -572,6 +624,7 @@ def build_rows(events, ctx, names):
             'Событие': event_label(etype, ctx),
             'Значение до': decode_value(e.get('value_before'), ctx),
             'Значение после': after,
+            'Действий за час': e.get('_grp', 1),
             'Ссылка': link,
             'ID объекта': eid or '',
             'Тип события': etype,
@@ -734,7 +787,17 @@ def main():
         return {'events': 0, 'from': d_from, 'to': d_to}
 
     ctx = build_context()
-    events = fetch_events(ts_from, ts_to)
+
+    author_ids = None
+    if AUTHORS:
+        author_ids, missing = resolve_author_ids(ctx['users'], AUTHORS)
+        if missing:
+            raise RuntimeError(f"Не нашёл менеджеров в amo: {', '.join(missing)}. "
+                               f"Проверь имена в AUTHORS (как в списке пользователей amo).")
+        picked = ', '.join(ctx['users'][str(i)] for i in author_ids)
+        print(f"Выгружаем только события менеджеров ({len(author_ids)}): {picked}")
+
+    events = fetch_events(ts_from, ts_to, author_ids)
     print(f"Событий получено: {len(events)}")
 
     by_author = {}
@@ -753,6 +816,10 @@ def main():
         events = [e for e in events
                   if e.get('type') in KEY_TYPES or CF_TYPE_RE.match(str(e.get('type') or ''))]
         print(f"Оставляю только ключевые типы событий: {len(events)}")
+
+    if GROUP_HOURLY:
+        events = group_hourly(events)
+        print(f"После группировки по часу (сущность+автор): {len(events)} строк")
 
     print("Догружаю то, чего нет в самих событиях (тексты, названия):")
     ctx['tasks'] = fetch_tasks(events)

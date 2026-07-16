@@ -20,6 +20,14 @@ on:
         description: 'key = только смысловые типы, all = вообще все'
         required: false
         default: 'key'
+      authors:
+        description: 'Менеджеры через запятую. Пусто = список 7 из скрипта, all = все'
+        required: false
+        default: ''
+      group_hourly:
+        description: 'Схлопывать серию действий по сделке за час в одну строку (true/false)'
+        required: false
+        default: 'true'
       sheet_name:
         description: 'Название листа. Пусто = «События»'
         required: false
@@ -54,6 +62,8 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           MANAGERS_ONLY: ${{ inputs.managers_only }}
           EVENTS_SCOPE: ${{ inputs.events_scope }}
+          AUTHORS: ${{ inputs.authors }}
+          GROUP_HOURLY: ${{ inputs.group_hourly }}
           SHEET_NAME: ${{ inputs.sheet_name }}
           DATE_FROM: ${{ inputs.date_from }}
           DATE_TO: ${{ inputs.date_to }}
