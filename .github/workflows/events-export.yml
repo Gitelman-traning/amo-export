@@ -24,8 +24,8 @@ on:
         description: 'Менеджеры через запятую. Пусто = список 7 из скрипта, all = все'
         required: false
         default: ''
-      group_hourly:
-        description: 'Схлопывать серию действий по сделке за час в одну строку (true/false)'
+      group_daily:
+        description: 'Схлопывать серию действий по сделке за день в одну строку (true/false)'
         required: false
         default: 'true'
       sheet_name:
@@ -63,7 +63,7 @@ jobs:
           MANAGERS_ONLY: ${{ inputs.managers_only }}
           EVENTS_SCOPE: ${{ inputs.events_scope }}
           AUTHORS: ${{ inputs.authors }}
-          GROUP_HOURLY: ${{ inputs.group_hourly }}
+          GROUP_DAILY: ${{ inputs.group_daily }}
           SHEET_NAME: ${{ inputs.sheet_name }}
           DATE_FROM: ${{ inputs.date_from }}
           DATE_TO: ${{ inputs.date_to }}

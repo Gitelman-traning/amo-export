@@ -84,8 +84,8 @@ AUTHORS = ([] if _authors_env.lower() == 'all'
            else [a.strip() for a in _authors_env.split(',') if a.strip()] or DEFAULT_AUTHORS)
 
 # Группировка: серия действий одного автора по одной сущности в пределах одного
-# календарного часа схлопывается в одну строку (последнее действие + счётчик).
-GROUP_HOURLY = (os.environ.get("GROUP_HOURLY", "").strip().lower() or "true") in ("1", "true", "yes")
+# календарного дня (по Москве) схлопывается в одну строку (последнее действие + счётчик).
+GROUP_DAILY = (os.environ.get("GROUP_DAILY", "").strip().lower() or "true") in ("1", "true", "yes")
 
 # Смысловые типы (кастомные поля добавляются отдельно регуляркой CF_TYPE_RE).
 KEY_TYPES = {
@@ -99,7 +99,7 @@ KEY_TYPES = {
 
 COLUMNS = [
     'Дата', 'Автор', 'Объект', 'Название', 'Событие',
-    'Значение до', 'Значение после', 'Действий за час', 'Ссылка', 'ID объекта', 'Тип события',
+    'Значение до', 'Значение после', 'Действий за день', 'Ссылка', 'ID объекта', 'Тип события',
 ]
 
 # Тип сущности → как называется в интерфейсе
@@ -470,13 +470,14 @@ def resolve_author_ids(user_map, wanted):
     return ids, missing
 
 
-def group_hourly(events):
-    """Серия действий одного автора по одной сущности в пределах календарного часа →
+def group_daily(events):
+    """Серия действий одного автора по одной сущности в пределах календарного дня (МСК) →
     одно событие (последнее по времени) с числом действий в '_grp'."""
     groups = {}
     for e in events:
         ts = int(e.get('created_at') or 0)
-        key = (e.get('entity_type'), e.get('entity_id'), e.get('created_by'), ts // 3600)
+        day = datetime.fromtimestamp(ts, tz=MSK).strftime('%Y-%m-%d') if ts else ''
+        key = (e.get('entity_type'), e.get('entity_id'), e.get('created_by'), day)
         g = groups.get(key)
         if g is None:
             groups[key] = {'event': e, 'count': 1}
@@ -624,7 +625,7 @@ def build_rows(events, ctx, names):
             'Событие': event_label(etype, ctx),
             'Значение до': decode_value(e.get('value_before'), ctx),
             'Значение после': after,
-            'Действий за час': e.get('_grp', 1),
+            'Действий за день': e.get('_grp', 1),
             'Ссылка': link,
             'ID объекта': eid or '',
             'Тип события': etype,
@@ -817,9 +818,9 @@ def main():
                   if e.get('type') in KEY_TYPES or CF_TYPE_RE.match(str(e.get('type') or ''))]
         print(f"Оставляю только ключевые типы событий: {len(events)}")
 
-    if GROUP_HOURLY:
-        events = group_hourly(events)
-        print(f"После группировки по часу (сущность+автор): {len(events)} строк")
+    if GROUP_DAILY:
+        events = group_daily(events)
+        print(f"После группировки по дню (сущность+автор): {len(events)} строк")
 
     print("Догружаю то, чего нет в самих событиях (тексты, названия):")
     ctx['tasks'] = fetch_tasks(events)
