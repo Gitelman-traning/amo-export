@@ -76,7 +76,10 @@ ENTITY_RU = {
     'customer': 'Покупатель',
     'catalog_element': 'Элемент списка',
     'task': 'Задача',
+    'talk': 'Беседа',
 }
+
+ENTITY_PLURAL = {'lead': 'leads', 'contact': 'contacts', 'company': 'companies'}
 
 # Раздел ссылки на карточку сущности
 ENTITY_URL = {
@@ -318,7 +321,9 @@ def build_context():
 
     print(f"Справочники: пользователей {len(user_map)}, воронок {len(pipe_name)}, "
           f"этапов {len(status_name)}, кастомных полей {len(fields)}")
-    return {'users': user_map, 'pipes': pipe_name, 'statuses': status_name, 'fields': fields}
+    # notes/tasks наполняются позже — после того, как узнаем, какие события пришли.
+    return {'users': user_map, 'pipes': pipe_name, 'statuses': status_name,
+            'fields': fields, 'notes': {}, 'tasks': {}}
 
 
 # ============================================================
@@ -380,6 +385,11 @@ def decode_wrapper(key, val, ctx):
         # показываем источник канала.
         return (val or {}).get('origin') or ''
 
+    if key == 'note':
+        # В событии только id заметки — текст догружен заранее.
+        nid = (val or {}).get('id')
+        return ctx['notes'].get(nid) or (f"примечание #{nid}" if nid else '')
+
     if key in ('tags', 'tag'):
         return _plain(val)
 
@@ -421,29 +431,95 @@ def event_label(etype, ctx):
     return EVENT_RU.get(etype, etype)
 
 
-def fetch_entity_names(events):
+def fetch_by_ids(path, key, ids):
+    """Универсальная догрузка сущностей пачками по filter[id][]."""
+    out, ids = [], list(ids)
+    for i in range(0, len(ids), 100):
+        try:
+            data = amo_get(path, {'limit': 250, 'filter[id][]': ids[i:i + 100]})
+        except RuntimeError as ex:
+            print(f"    пропускаю пачку {path} ({str(ex)[:80]})")
+            continue
+        out.extend((data.get('_embedded') or {}).get(key) or [])
+        time.sleep(REQUEST_INTERVAL)
+    return out
+
+
+def fetch_tasks(events):
+    """Задачи: в событии только id задачи, а текст («итоги») лежит в самой задаче."""
+    ids = {e['entity_id'] for e in events
+           if e.get('entity_type') == 'task' and e.get('entity_id')}
+    if not ids:
+        return {}
+    print(f"  задачи: {len(ids)} шт.")
+    tasks = {}
+    for t in fetch_by_ids('/api/v4/tasks', 'tasks', ids):
+        tasks[t['id']] = {
+            'text': t.get('text') or '',
+            'entity_id': t.get('entity_id'),
+            'entity_type': t.get('entity_type'),
+            'complete_till': t.get('complete_till'),
+            'result': ((t.get('result') or {}) or {}).get('text') or '',
+        }
+    return tasks
+
+
+def note_text(n):
+    """Человекочитаемый текст заметки: примечание, звонок, системное сообщение."""
+    p = n.get('params') or {}
+    t = n.get('note_type') or ''
+    if t in ('call_in', 'call_out'):
+        bits = ['входящий звонок' if t == 'call_in' else 'исходящий звонок']
+        if p.get('phone'):
+            bits.append(str(p['phone']))
+        if p.get('duration') not in (None, ''):
+            bits.append(f"{p['duration']} сек")
+        if p.get('text'):
+            bits.append(str(p['text']))
+        return ', '.join(bits)
+    for k in ('text', 'comment', 'message'):
+        if p.get(k):
+            return str(p[k])
+    return t
+
+
+def fetch_notes(events):
+    """Тексты примечаний/звонков: в событии приходит только id заметки."""
+    need = {}
+    for e in events:
+        ent = e.get('entity_type')
+        if ent not in ENTITY_PLURAL:
+            continue
+        for item in (e.get('value_after') or []) + (e.get('value_before') or []):
+            if isinstance(item, dict) and isinstance(item.get('note'), dict):
+                nid = item['note'].get('id')
+                if nid:
+                    need.setdefault(ent, set()).add(nid)
+    notes = {}
+    for ent, ids in need.items():
+        print(f"  примечания: {ent} — {len(ids)} шт.")
+        for n in fetch_by_ids(f'/api/v4/{ENTITY_PLURAL[ent]}/notes', 'notes', ids):
+            notes[n['id']] = note_text(n)
+    return notes
+
+
+def fetch_entity_names(events, tasks):
     """Названия сущностей: API событий их не отдаёт, догружаем пачками по id."""
     need = {}
     for e in events:
         ent, eid = e.get('entity_type'), e.get('entity_id')
-        if ent in ('lead', 'contact', 'company') and eid:
+        if ent in ENTITY_PLURAL and eid:
             need.setdefault(ent, set()).add(eid)
+    # Для событий по задачам показываем название сделки/контакта, к которым задача привязана.
+    for t in tasks.values():
+        if t.get('entity_type') in ENTITY_PLURAL and t.get('entity_id'):
+            need.setdefault(t['entity_type'], set()).add(t['entity_id'])
 
     names = {}
-    plural = {'lead': 'leads', 'contact': 'contacts', 'company': 'companies'}
     for ent, ids in need.items():
-        ids = list(ids)
         print(f"  названия: {ent} — {len(ids)} шт.")
-        for i in range(0, len(ids), 100):
-            chunk = ids[i:i + 100]
-            try:
-                data = amo_get(f'/api/v4/{plural[ent]}', {'limit': 250, 'filter[id][]': chunk})
-            except RuntimeError as ex:
-                print(f"    пропускаю пачку ({str(ex)[:80]})")
-                continue
-            for x in ((data.get('_embedded') or {}).get(plural[ent]) or []):
-                names[f"{ent}:{x['id']}"] = x.get('name') or ''
-            time.sleep(REQUEST_INTERVAL)
+        for x in fetch_by_ids(f'/api/v4/{ENTITY_PLURAL[ent]}', ENTITY_PLURAL[ent], ids):
+            names[f"{ent}:{x['id']}"] = x.get('name') or ''
     return names
 
 
@@ -455,15 +531,28 @@ def build_rows(events, ctx, names):
         etype = e.get('type') or ''
         ent = e.get('entity_type') or ''
         eid = e.get('entity_id')
+        after = decode_value(e.get('value_after'), ctx)
+        name = names.get(f"{ent}:{eid}", '')
         link = f"{AMO_BASE_URL}/{ENTITY_URL[ent]}/{eid}" if ent in ENTITY_URL and eid else ''
+
+        # Событие по задаче: сама задача значения не несёт — берём её текст,
+        # а название и ссылку — у сделки/контакта, к которым задача привязана.
+        if ent == 'task':
+            t = ctx['tasks'].get(eid) or {}
+            after = after or t.get('result') or t.get('text') or ''
+            tent, tid = t.get('entity_type'), t.get('entity_id')
+            if tent in ENTITY_PLURAL and tid:
+                name = names.get(f"{tent}:{tid}", '')
+                link = f"{AMO_BASE_URL}/{ENTITY_URL[tent]}/{tid}" if tent in ENTITY_URL else ''
+
         rows.append({
             'Дата': fmt_dt(e.get('created_at')),
             'Автор': ctx['users'].get(str(e.get('created_by'))) or str(e.get('created_by') or ''),
             'Объект': ENTITY_RU.get(ent, ent),
-            'Название': names.get(f"{ent}:{eid}", ''),
+            'Название': name,
             'Событие': event_label(etype, ctx),
             'Значение до': decode_value(e.get('value_before'), ctx),
-            'Значение после': decode_value(e.get('value_after'), ctx),
+            'Значение после': after,
             'Ссылка': link,
             'ID объекта': eid or '',
             'Тип события': etype,
@@ -592,7 +681,10 @@ def main():
     events = fetch_events(ts_from, ts_to)
     print(f"Событий получено: {len(events)}")
 
-    names = fetch_entity_names(events)
+    print("Догружаю то, чего нет в самих событиях (тексты, названия):")
+    ctx['tasks'] = fetch_tasks(events)
+    ctx['notes'] = fetch_notes(events)
+    names = fetch_entity_names(events, ctx['tasks'])
     rows = build_rows(events, ctx, names)
     authors = len({r['Автор'] for r in rows if r['Автор']})
     print(f"Строк к записи: {len(rows)}, авторов: {authors}")
