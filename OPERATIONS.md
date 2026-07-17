@@ -13,7 +13,7 @@ cron GitHub на новом репозитории был ненадёжен. n8
 
 - **Репозиторий:** https://github.com/Gitelman-traning/amo-export (приватный, аккаунт GitHub `Gitelman-traning`)
 - **Оркестратор:** GitHub Actions (воркфлоу в `.github/workflows/`)
-- **Планировщик:** cron-job.org (5 заданий → GitHub API `workflow_dispatch`)
+- **Планировщик:** cron-job.org (6 заданий → GitHub API `workflow_dispatch`)
 - **Локальная папка с кодом:** `C:\Users\Nikita\Documents\Gitelman\Local\amo-export`
 
 ---
@@ -28,7 +28,7 @@ cron GitHub на новом репозитории был ненадёжен. n8
 | Публикация отчётов в ТГ | `tg_report.py` | после выгрузки amoCRM (по цепочке) | читает лист `tg_reports`, шлёт готовые тексты в Telegram-чаты | Telegram |
 | Транскрибация зумов | `zoom_transcribe.py` | 01:20 | новые записи Zoom → Apify+Deepgram → Google Doc | таблица «маркетинг» `1gbj-…`, лист «дпд» (ссылка на док) |
 | Напоминание о новой таблице | `monthly_reminder.py` | 1-го числа 09:00 | напоминание в ТГ завести таблицу на месяц | Telegram |
-| События по менеджерам | `events_export.py` | только вручную | лента событий amo (Аналитика → Список событий) за текущий месяц | месячная таблица `SPREADSHEET_ID`, лист «События» |
+| События по менеджерам | `events_export.py` | 01:35 | события по сделкам 7 менеджеров за текущий месяц (Аналитика → Список событий) | месячная таблица `SPREADSHEET_ID`, лист «События» |
 
 Плюс в репо есть `BMI.io → Google Sheets` (выгрузка бюджета), запускается по цепочке.
 
@@ -36,7 +36,7 @@ cron GitHub на новом репозитории был ненадёжен. n8
 
 ## 3. Запуск по расписанию (cron-job.org)
 
-Личный кабинет: https://console.cron-job.org — **5 заданий**, у всех:
+Личный кабинет: https://console.cron-job.org — **6 заданий**, у всех:
 - **Method:** POST
 - **URL:** `https://api.github.com/repos/Gitelman-traning/amo-export/actions/workflows/<ФАЙЛ>.yml/dispatches`
 - **Headers:** `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`
@@ -50,6 +50,7 @@ cron GitHub на новом репозитории был ненадёжен. n8
 | Звонки OnlinePBX | `pbx-export.yml` | `15 1 * * *` |
 | Контакты 2026 | `second-line.yml` | `20 1 * * *` |
 | Транскрибация зумов | `zoom-transcribe.yml` | `20 1 * * *` |
+| События amoCRM | `events-export.yml` | `35 1 * * *` |
 | Добавить новый ID таблицы | `monthly-reminder.yml` | `0 9 1 * *` |
 
 Отчёты в ТГ (`tg-report.yml`) отдельным заданием НЕ дёргаются — они идут **по цепочке**
@@ -116,9 +117,9 @@ Settings репозитория → Secrets and variables → Actions.
 
 Задания cron-job.org ходят по **GitHub fine-grained PAT** (права: репо `amo-export`, Actions: Read and write).
 - Срок жизни fine-grained максимум **~1 год**. Последнее продление: **08.07.2026**.
-- Когда истечёт — **все 5 заданий встанут** (будут ловить 401).
+- Когда истечёт — **все 6 заданий встанут** (будут ловить 401).
 - Продлить: https://github.com/settings/personal-access-tokens → токен → **Regenerate** →
-  новый срок → скопировать → обновить `Authorization: Bearer <новый>` во **всех 5 заданиях** cron-job.org → TEST RUN (204).
+  новый срок → скопировать → обновить `Authorization: Bearer <новый>` во **всех 6 заданиях** cron-job.org → TEST RUN (204).
 - Альтернатива, чтобы не продлевать: classic token с правами `repo`+`workflow` и «No expiration» (но шире по правам).
 
 ---
@@ -137,9 +138,12 @@ Settings репозитория → Secrets and variables → Actions.
 ## 9а. Выгрузка событий по менеджерам (`events_export.py`)
 
 Повторяет раздел amo «Аналитика → Список событий»: кто что сделал, с расшифровкой
-«Значение до» → «Значение после». Запускается вручную: Actions → **События amoCRM** → Run workflow.
+«Значение до» → «Значение после». Идёт ночью **01:35** (cron-job.org, после остальных
+выгрузок), можно и вручную: Actions → **События amoCRM** → Run workflow.
 
-Параметры при запуске (все необязательные):
+Параметры при запуске (все необязательные; ночью берутся значения по умолчанию):
+- **entity_scope** — по умолчанию `leads`: только события по сделкам (+ задачи,
+  поставленные на сделку). `all` — по всем объектам (добавит контакты и компании).
 - **authors** — чьи события. Пусто = список 7 менеджеров, зашитый в скрипт
   (Кротов, Огнев, Пацкевич, Мурзаев, Русакова, Ткачева, Узянов); можно перечислить
   свои имена через запятую (как в amo) или `all` — все авторы. Фильтр уходит в amo
@@ -167,7 +171,7 @@ Settings репозитория → Secrets and variables → Actions.
   сделок/контактов догружаются пачками по `filter[id][]`;
 - **у примечаний и звонков приходит только ID заметки** — тексты догружаются из `/notes`;
 - **у задач значение пустое** — текст берётся из самой задачи, а название/ссылка — у сделки,
-  к которой задача привязана.
+  к которой задача привязана (у `/api/v4/tasks` `entity_type` во мн. числе: `leads`/`contacts`).
 
 Лист перезаписывается целиком при каждом прогоне (не дописывается).
 
