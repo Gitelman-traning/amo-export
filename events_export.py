@@ -529,12 +529,17 @@ def fetch_tasks(events):
     if not ids:
         return {}
     print(f"  задачи: {len(ids)} шт.")
+    # У /api/v4/tasks entity_type приходит во множественном числе (leads/contacts/...)
+    # — приводим к тому же виду, что и в событиях (lead/contact/...).
+    singular = {'leads': 'lead', 'contacts': 'contact', 'companies': 'company',
+                'customers': 'customer'}
     tasks = {}
     for t in fetch_by_ids('/api/v4/tasks', 'tasks', ids):
+        et = t.get('entity_type')
         tasks[t['id']] = {
             'text': t.get('text') or '',
             'entity_id': t.get('entity_id'),
-            'entity_type': t.get('entity_type'),
+            'entity_type': singular.get(et, et),
             'complete_till': t.get('complete_till'),
             'result': ((t.get('result') or {}) or {}).get('text') or '',
         }
