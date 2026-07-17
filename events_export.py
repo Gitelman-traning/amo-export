@@ -87,6 +87,11 @@ AUTHORS = ([] if _authors_env.lower() == 'all'
 # календарного дня (по Москве) схлопывается в одну строку (последнее действие + счётчик).
 GROUP_DAILY = (os.environ.get("GROUP_DAILY", "").strip().lower() or "true") in ("1", "true", "yes")
 
+# По каким объектам оставлять события:
+#   leads — только сделки (+ задачи, поставленные на сделку). Контакты/компании убираем.
+#   all   — по всем объектам (сделки, контакты, компании, задачи).
+ENTITY_SCOPE = (os.environ.get("ENTITY_SCOPE", "").strip().lower() or "leads")
+
 # Смысловые типы (кастомные поля добавляются отдельно регуляркой CF_TYPE_RE).
 KEY_TYPES = {
     'lead_status_changed', 'entity_responsible_changed',
@@ -613,6 +618,9 @@ def build_rows(events, ctx, names):
             t = ctx['tasks'].get(eid) or {}
             after = after or t.get('result') or t.get('text') or ''
             tent, tid = t.get('entity_type'), t.get('entity_id')
+            # В режиме «только сделки» задачи не по сделке отбрасываем.
+            if ENTITY_SCOPE == 'leads' and tent != 'lead':
+                continue
             if tent in ENTITY_PLURAL and tid:
                 name = names.get(f"{tent}:{tid}", '')
                 link = f"{AMO_BASE_URL}/{ENTITY_URL[tent]}/{tid}" if tent in ENTITY_URL else ''
@@ -817,6 +825,12 @@ def main():
         events = [e for e in events
                   if e.get('type') in KEY_TYPES or CF_TYPE_RE.match(str(e.get('type') or ''))]
         print(f"Оставляю только ключевые типы событий: {len(events)}")
+
+    if ENTITY_SCOPE == 'leads':
+        # Сразу оставляем сделки и задачи; контакты/компании убираем.
+        # Задачи, привязанные не к сделке, отсеются позже (после догрузки их привязки).
+        events = [e for e in events if e.get('entity_type') in ('lead', 'task')]
+        print(f"Оставляю только события по сделкам (+задачи): {len(events)}")
 
     if GROUP_DAILY:
         events = group_daily(events)

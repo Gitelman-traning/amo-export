@@ -20,6 +20,10 @@ on:
         description: 'key = только смысловые типы, all = вообще все'
         required: false
         default: 'key'
+      entity_scope:
+        description: 'leads = только по сделкам (+задачи по сделкам), all = по всем объектам'
+        required: false
+        default: 'leads'
       authors:
         description: 'Менеджеры через запятую. Пусто = список 7 из скрипта, all = все'
         required: false
@@ -62,6 +66,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           MANAGERS_ONLY: ${{ inputs.managers_only }}
           EVENTS_SCOPE: ${{ inputs.events_scope }}
+          ENTITY_SCOPE: ${{ inputs.entity_scope }}
           AUTHORS: ${{ inputs.authors }}
           GROUP_DAILY: ${{ inputs.group_daily }}
           SHEET_NAME: ${{ inputs.sheet_name }}
