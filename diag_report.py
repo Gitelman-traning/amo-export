@@ -98,6 +98,30 @@ def main():
                            range="'общая выгрузка от Никиты'!A1:A9265").execute().get('values', [])
     print(f"  заполнено строк в колонке A: {sum(1 for r in cnt2 if r and str(r[0]).strip())}")
 
+    # Реальное распределение проведённых диагностик (AG) и продаж (AR) по датам
+    def serial_to_date(x):
+        try:
+            n = float(x)
+        except (TypeError, ValueError):
+            return None
+        if n < 40000 or n > 60000:
+            return None
+        from datetime import datetime, timedelta
+        return datetime(1899, 12, 30) + timedelta(days=int(n))
+
+    for col, name in (('AG', 'проведённые диагностики'), ('AR', 'продажи/оплаты'), ('M', 'дата лида')):
+        d = ss.values().get(spreadsheetId=SPREADSHEET_ID,
+                            range=f"'⬇️ОБЩАЯ ВЫГРУЗКА'!{col}5:{col}9000").execute().get('values', [])
+        months = {}
+        total = 0
+        for r in d:
+            dt = serial_to_date(r[0]) if r else None
+            if dt:
+                total += 1
+                months[f"{dt.year}-{dt.month:02d}"] = months.get(f"{dt.year}-{dt.month:02d}", 0) + 1
+        top = ', '.join(f"{k}:{v}" for k, v in sorted(months.items())[-6:])
+        print(f"\n{col} ({name}): непустых дат {total}; по месяцам: {top}")
+
     # export_date на листе выгрузки
     print("\n=== export_date (KO/KP на 'общая выгрузка от Никиты') ===")
     try:
