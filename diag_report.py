@@ -45,6 +45,14 @@ def main():
                 if row and str(row[0]).strip():
                     print(f"  строка {i}:\n{row[0]}\n---")
 
+    # Лист «Проверка»: ячейки-сборщики отчётов W73 (маркетинг) и AC73 (продажи)
+    for addr in ('W73', 'AC73'):
+        for render in ('FORMULA', 'FORMATTED_VALUE'):
+            v = ss.values().get(spreadsheetId=SPREADSHEET_ID, range=f"'Проверка'!{addr}",
+                                valueRenderOption=render).execute().get('values', [['']])
+            cell = v[0][0] if v and v[0] else ''
+            print(f"\n=== Проверка!{addr} [{render}] ===\n{cell}")
+
     # export_date на листе выгрузки
     print("\n=== export_date (KO/KP на 'общая выгрузка от Никиты') ===")
     try:
