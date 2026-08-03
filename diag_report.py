@@ -79,6 +79,25 @@ def main():
             h = ah[i][0] if i < len(ah) and ah[i] else ''
             print(f"  {12+i}: AG=[{g}]  AH=[{h}]")
 
+    # Откуда '⬇️ОБЩАЯ ВЫГРУЗКА' берёт данные (IMPORTRANGE/QUERY?) + объём
+    print("\n=== '⬇️ОБЩАЯ ВЫГРУЗКА' источник данных ===")
+    for addr in ('A1', 'A2', 'A3', 'D1', 'D2', 'M2', 'AG2', 'AR2'):
+        f = ss.values().get(spreadsheetId=SPREADSHEET_ID, range=f"'⬇️ОБЩАЯ ВЫГРУЗКА'!{addr}",
+                            valueRenderOption='FORMULA').execute().get('values', [['']])
+        cell = f[0][0] if f and f[0] else ''
+        if str(cell).strip():
+            print(f"  {addr}: {str(cell)[:300]}")
+    cnt = ss.values().get(spreadsheetId=SPREADSHEET_ID,
+                          range="'⬇️ОБЩАЯ ВЫГРУЗКА'!D1:D9000").execute().get('values', [])
+    nonempty = sum(1 for r in cnt if r and str(r[0]).strip())
+    print(f"  заполнено строк в колонке D: {nonempty}")
+
+    # То же для листа, куда пишет скрипт
+    print("\n=== 'общая выгрузка от Никиты' объём ===")
+    cnt2 = ss.values().get(spreadsheetId=SPREADSHEET_ID,
+                           range="'общая выгрузка от Никиты'!A1:A9265").execute().get('values', [])
+    print(f"  заполнено строк в колонке A: {sum(1 for r in cnt2 if r and str(r[0]).strip())}")
+
     # export_date на листе выгрузки
     print("\n=== export_date (KO/KP на 'общая выгрузка от Никиты') ===")
     try:
