@@ -1,0 +1,42 @@
+name: Сделки по списку (разово)
+
+on:
+  workflow_dispatch:
+    inputs:
+      spreadsheet_id:
+        description: 'ID новой таблицы (куда писать)'
+        required: true
+        default: '1aa6OokuYjZu6NzAW38_MTji9QHKK1DWycI6rIgZobZs'
+      deal_ids:
+        description: 'ID сделок через запятую. Пусто = список из скрипта'
+        required: false
+        default: ''
+      sheet_name:
+        description: 'Название листа. Пусто = «Сделки»'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Только проверка, без записи (true/false)'
+        required: false
+        default: 'false'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python deals_by_id.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DEALS_SHEET_ID: ${{ inputs.spreadsheet_id }}
+          DEAL_IDS: ${{ inputs.deal_ids }}
+          SHEET_NAME: ${{ inputs.sheet_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
