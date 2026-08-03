@@ -1,0 +1,41 @@
+name: Автозакрытие Первой линии
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Только проверка, без записи в amoCRM (true/false)'
+        required: false
+        default: 'true'
+      max_close_per_run:
+        description: 'Предохранитель: макс. закрытий за прогон'
+        required: false
+        default: '500'
+      close_max_age_days:
+        description: 'Не трогать сделки старше N дней (0 = без границы)'
+        required: false
+        default: '0'
+      created_from:
+        description: 'Трогать только созданные не раньше ДД.ММ.ГГГГ (пусто = без)'
+        required: false
+        default: ''
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python close_stale_leads.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MAX_CLOSE_PER_RUN: ${{ inputs.max_close_per_run }}
+          CLOSE_MAX_AGE_DAYS: ${{ inputs.close_max_age_days }}
+          CREATED_FROM: ${{ inputs.created_from }}
