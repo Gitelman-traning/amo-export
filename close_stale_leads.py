@@ -287,6 +287,15 @@ def main():
         print(f"  закрыто: {closed}/{len(close_payload)}")
         time.sleep(REQUEST_INTERVAL)
 
+    # verify: перечитываем первые закрытые и подтверждаем статус + причину
+    for l in capped_close[:5]:
+        d = amo_get(f"/api/v4/leads/{l['id']}")
+        reason = ''
+        for f in (d.get('custom_fields_values') or []):
+            if f.get('field_id') == REASON_FIELD_ID:
+                reason = ', '.join(str(v.get('value')) for v in (f.get('values') or []))
+        print(f"  ✓ #{l['id']}: status_id={d.get('status_id')} причина=«{reason}»")
+
     print(f"ГОТОВО. Задач: {created}, закрыто: {closed}.")
     return {'tasks': created, 'closed': closed, 'to_close_total': len(to_close)}
 
