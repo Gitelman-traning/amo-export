@@ -29,13 +29,3 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
-
-      # Наполняем import_clients значениями из «Клиенты 2025» вместо IMPORTRANGE,
-      # чтобы после копирования таблицы блок оплат не обнулялся (не требовал ручного approve).
-      - name: Обновить import_clients (без IMPORTRANGE)
-        run: python sync_import_clients.py
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
