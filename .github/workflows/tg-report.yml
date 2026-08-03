@@ -49,3 +49,16 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           # при ручном запуске пауза на пересчёт не нужна (данные уже устоялись)
           REPORT_START_DELAY: ${{ github.event_name == 'workflow_dispatch' && '0' || '240' }}
+
+      # Автозакрытие застрявших сделок Первой линии (27д → задача, 30д → закрытие).
+      # БОЕВОЙ режим только при плановом прогоне (workflow_run); при РУЧНОМ запуске
+      # отчёта идёт в dry-run, чтобы случайно не закрыть сделки. Ручное боевое закрытие —
+      # через отдельный workflow «Автозакрытие Первой линии» (close-stale.yml).
+      - name: Автозакрытие Первой линии
+        if: ${{ always() }}
+        run: python close_stale_leads.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
