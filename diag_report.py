@@ -24,19 +24,26 @@ def main():
         p = s['properties']; g = p.get('gridProperties', {})
         print(f"  «{p['title']}»  {g.get('rowCount')}x{g.get('columnCount')}")
 
-    # tg_reports — и значения, и формулы
-    for render in ('FORMATTED_VALUE', 'FORMULA'):
-        try:
-            r = ss.values().get(spreadsheetId=SPREADSHEET_ID, range="'tg_reports'!A1:D40",
+    # tg_reports: headers + message_text (значение и формула) по каждой строке
+    hdr = ss.values().get(spreadsheetId=SPREADSHEET_ID, range="'tg_reports'!1:1").execute().get('values', [[]])[0]
+    print(f"\n=== tg_reports заголовки: {hdr}")
+    col_msg = None
+    for i, h in enumerate(hdr):
+        if str(h).strip().lower() == 'message_text':
+            col_msg = i
+            break
+    if col_msg is None:
+        print("  колонка message_text не найдена!")
+    else:
+        letter = chr(ord('A') + col_msg)
+        for render in ('FORMATTED_VALUE', 'FORMULA'):
+            r = ss.values().get(spreadsheetId=SPREADSHEET_ID,
+                                range=f"'tg_reports'!{letter}2:{letter}6",
                                 valueRenderOption=render).execute().get('values', [])
-        except Exception as ex:
-            print(f"\ntg_reports ({render}) — ошибка: {ex}"); continue
-        print(f"\n=== tg_reports [{render}] ===")
-        for i, row in enumerate(r, 1):
-            for j, cell in enumerate(row):
-                c = str(cell)
-                if c.strip():
-                    print(f"  R{i}C{j+1}: {c[:400]}")
+            print(f"\n=== message_text [{render}] ===")
+            for i, row in enumerate(r, 2):
+                if row and str(row[0]).strip():
+                    print(f"  строка {i}:\n{row[0]}\n---")
 
     # export_date на листе выгрузки
     print("\n=== export_date (KO/KP на 'общая выгрузка от Никиты') ===")
