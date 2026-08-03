@@ -42,6 +42,8 @@ def main():
     now = datetime.now(timezone.utc)
     buckets = {'age27': 0, 'age28_29': 0, 'age30plus': 0, 'total_open': 0}
     ex27, ex30 = [], []
+    months30 = {}          # распределение 30+ дневных по месяцу создания
+    min30, max30 = None, None
     params = {'limit': 250, 'filter[pipeline_id][0]': PIPELINE_ID}
     url, page = '/api/v4/leads', 0
     first = True
@@ -66,6 +68,12 @@ def main():
                 buckets['age28_29'] += 1
             elif age >= 30:
                 buckets['age30plus'] += 1
+                cdt = datetime.fromtimestamp(created, tz=timezone.utc)
+                months30[f"{cdt.year}-{cdt.month:02d}"] = months30.get(f"{cdt.year}-{cdt.month:02d}", 0) + 1
+                if min30 is None or created < min30:
+                    min30 = created
+                if max30 is None or created > max30:
+                    max30 = created
                 if len(ex30) < 5:
                     ex30.append((l['id'], age, l.get('name')))
         url = ((dd.get('_links') or {}).get('next') or {}).get('href')
@@ -78,6 +86,14 @@ def main():
     print(f"  30+ дней (→ закрытие):       {buckets['age30plus']}")
     print("  примеры 27-дневных:", ex27)
     print("  примеры 30+ дневных:", ex30)
+
+    def d(ts):
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%d.%m.%Y') if ts else '-'
+    print("\n=== 30+ дневные: даты создания (для ручного разбора) ===")
+    print(f"  самая ранняя: {d(min30)}   самая поздняя: {d(max30)}")
+    print("  по месяцам создания:")
+    for k in sorted(months30):
+        print(f"    {k}: {months30[k]}")
 
 
 if __name__ == '__main__':
