@@ -10,7 +10,7 @@ on:
       deal_ids:
         description: 'ID сделок через запятую. Пусто = список из скрипта'
         required: false
-        default: ''
+        default: '31642515,31638705,31638617,31642567'
       sheet_name:
         description: 'Название листа. Пусто = «Сделки»'
         required: false
@@ -40,3 +40,5 @@ jobs:
           DEAL_IDS: ${{ inputs.deal_ids }}
           SHEET_NAME: ${{ inputs.sheet_name }}
           DRY_RUN: ${{ inputs.dry_run }}
+          # заголовки колонок берём из боевой месячной таблицы (08.26), лист «общая выгрузка от Никиты»
+          HEADER_SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}

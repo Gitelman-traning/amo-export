@@ -43,6 +43,12 @@ DEAL_IDS = ([int(x) for x in _ids_env.replace(';', ',').split(',') if x.strip().
 DEALS_SHEET_ID = os.environ.get("DEALS_SHEET_ID", "").strip()
 SHEET_NAME = os.environ.get("SHEET_NAME", "").strip() or "Сделки"
 
+# Заголовки колонок берём из листа основной выгрузки месячной таблицы (08.26 и т.д.),
+# чтобы состав/порядок столбцов ТОЧНО совпадал с боевым отчётом.
+HEADER_SPREADSHEET_ID = os.environ.get("HEADER_SPREADSHEET_ID", "").strip()
+HEADER_SHEET = os.environ.get("HEADER_SHEET", "").strip() or "общая выгрузка от Никиты"
+HEADER_ROW = int(os.environ.get("HEADER_ROW") or "2")
+
 # ---- Секреты / режим ----
 AMO_TOKEN = ax.AMO_TOKEN
 GOOGLE_SA_JSON = ax.GOOGLE_SA_JSON
@@ -62,6 +68,19 @@ def sheets_service():
     creds = Credentials.from_service_account_info(
         info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
     return build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets()
+
+
+def read_headers(svc):
+    """Заголовки колонок из листа основной выгрузки (строка HEADER_ROW)."""
+    resp = svc.values().get(
+        spreadsheetId=HEADER_SPREADSHEET_ID,
+        range=f"'{HEADER_SHEET}'!{HEADER_ROW}:{HEADER_ROW}").execute()
+    rows = resp.get('values') or [[]]
+    headers = [h for h in (rows[0] if rows else []) if str(h).strip()]
+    if not headers:
+        raise RuntimeError(f"Не нашёл заголовки в строке {HEADER_ROW} листа «{HEADER_SHEET}» "
+                           f"таблицы {HEADER_SPREADSHEET_ID}")
+    return headers
 
 
 def ensure_sheet(svc, title, need_rows, need_cols):
@@ -106,7 +125,8 @@ def apply_date_format(svc, sheet_id, headers):
 
 def main():
     missing = [n for n, v in [('AMO_TOKEN', AMO_TOKEN),
-                              ('GOOGLE_SERVICE_ACCOUNT_JSON', GOOGLE_SA_JSON)] if not v]
+                              ('GOOGLE_SERVICE_ACCOUNT_JSON', GOOGLE_SA_JSON),
+                              ('HEADER_SPREADSHEET_ID', HEADER_SPREADSHEET_ID)] if not v]
     if not DRY_RUN and not DEALS_SHEET_ID:
         missing.append('DEALS_SHEET_ID')
     if missing:
@@ -161,14 +181,10 @@ def main():
     for r in rows:
         ax.enrich_row(r, contact_map)
 
-    # --- колонки: как в основной выгрузке (порядок ключей build_row, без служебных)
-    #     + первой добавляем ссылку на сделку ---
-    base_cols = [k for k in rows[0].keys() if not k.startswith('_')] if rows else []
-    headers = ['Ссылка на сделку'] + base_cols
-    for r, l in zip(rows, leads):
-        r['Ссылка на сделку'] = f"{AMO_BASE_URL}/leads/detail/{l['id']}"
-
-    print(f"Колонок: {len(headers)}, строк: {len(rows)}")
+    # --- колонки: ровно как в 08.26-отчёте (заголовки листа основной выгрузки) ---
+    svc = sheets_service()
+    headers = read_headers(svc)
+    print(f"Колонок из «{HEADER_SHEET}»: {len(headers)}; строк: {len(rows)}")
 
     if DRY_RUN:
         print("DRY_RUN — в таблицу не пишу. Первые значения по строкам:")
@@ -179,7 +195,6 @@ def main():
         return {'rows': len(rows), 'found': len(leads), 'missing': missing_ids}
 
     # --- запись ---
-    svc = sheets_service()
     sheet_id = ensure_sheet(svc, SHEET_NAME, len(rows) + 10, len(headers))
     values = svc.values()
     values.clear(spreadsheetId=DEALS_SHEET_ID, range=f"'{SHEET_NAME}'").execute()
