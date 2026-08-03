@@ -53,6 +53,34 @@ MAX_CLOSE_PER_RUN = int(os.environ.get("MAX_CLOSE_PER_RUN") or "500")
 CLOSE_MAX_AGE_DAYS = int(os.environ.get("CLOSE_MAX_AGE_DAYS") or "0")   # 0 = без верхней границы
 CREATED_FROM = os.environ.get("CREATED_FROM", "").strip()               # ДД.ММ.ГГГГ или пусто
 
+# Исключения: id сделок, которые НЕ трогаем (ни задача, ни закрытие).
+# Читаем из файла exclude_leads.txt рядом со скриптом (по одному id в строке, # — комментарий).
+EXCLUDE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exclude_leads.txt")
+
+# Тег в amoCRM: сделки с этим тегом тоже пропускаем (гибкая защита из самой CRM).
+EXCLUDE_TAG = "не автозакрывать"
+
+
+def load_exclude_ids():
+    ids = set()
+    for x in os.environ.get("EXCLUDE_IDS", "").replace(';', ',').split(','):
+        if x.strip().isdigit():
+            ids.add(int(x.strip()))
+    if os.path.exists(EXCLUDE_FILE):
+        with open(EXCLUDE_FILE, encoding='utf-8') as f:
+            for line in f:
+                line = line.split('#', 1)[0].strip()
+                if line.isdigit():
+                    ids.add(int(line))
+    return ids
+
+
+def has_exclude_tag(lead):
+    for t in ((lead.get('_embedded') or {}).get('tags') or []):
+        if str(t.get('name') or '').strip().lower() == EXCLUDE_TAG:
+            return True
+    return False
+
 TIMEZONE = "Europe/Moscow"
 MSK = ZoneInfo(TIMEZONE)
 REQUEST_INTERVAL = 0.2
@@ -176,11 +204,18 @@ def main():
           f"max_age={CLOSE_MAX_AGE_DAYS or '∞'}, created_from={CREATED_FROM or '—'}, "
           f"лимит закрытий={MAX_CLOSE_PER_RUN}" + (" [DRY_RUN]" if DRY_RUN else ""))
 
+    exclude_ids = load_exclude_ids()
+    print(f"Исключений из файла/env: {len(exclude_ids)}; тег-исключение: «{EXCLUDE_TAG}»")
+
     leads = fetch_open_leads()
     print(f"Открытых сделок Первой линии: {len(leads)}")
 
     to_task, to_close = [], []
+    skipped_excl = 0
     for l in leads:
+        if l['id'] in exclude_ids or has_exclude_tag(l):
+            skipped_excl += 1
+            continue
         age = age_days(l.get('created_at'), today)
         cdate = datetime.fromtimestamp(int(l.get('created_at') or 0), tz=MSK).date()
         if created_from_date and cdate < created_from_date:
@@ -192,6 +227,7 @@ def main():
         elif WARN_DAYS <= age < CLOSE_DAYS:
             to_task.append(l)
 
+    print(f"Пропущено по исключениям: {skipped_excl}")
     print(f"Кандидатов на задачу (27-29д): {len(to_task)}; на закрытие (30д+): {len(to_close)}")
 
     # --- Задачи (идемпотентно) ---
@@ -230,6 +266,10 @@ def main():
         print("[DRY_RUN] Закрылись бы (первые 15):")
         for l in capped_close[:15]:
             print(f"  #{l['id']} возраст {age_days(l.get('created_at'), today)}д «{l.get('name')}»")
+        # Полный список ID под закрытие — для формирования файла исключений.
+        all_close_ids = [str(l['id']) for l in to_close]
+        print(f"[DRY_RUN] ВСЕ id под закрытие ({len(all_close_ids)}):")
+        print(','.join(all_close_ids))
         return {'tasks': len(task_payload), 'closed': len(close_payload), 'to_close_total': len(to_close)}
 
     # реальная запись
