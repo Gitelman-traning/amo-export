@@ -13,7 +13,7 @@ cron GitHub на новом репозитории был ненадёжен. n8
 
 - **Репозиторий:** https://github.com/Gitelman-traning/amo-export (приватный, аккаунт GitHub `Gitelman-traning`)
 - **Оркестратор:** GitHub Actions (воркфлоу в `.github/workflows/`)
-- **Планировщик:** cron-job.org (6 заданий → GitHub API `workflow_dispatch`)
+- **Планировщик:** cron-job.org (7 заданий → GitHub API `workflow_dispatch`)
 - **Локальная папка с кодом:** `C:\Users\Nikita\Documents\Gitelman\Local\amo-export`
 
 ---
@@ -30,6 +30,7 @@ cron GitHub на новом репозитории был ненадёжен. n8
 | Транскрибация зумов | `zoom_transcribe.py` | 01:20 | новые записи Zoom → Apify+Deepgram → Google Doc | таблица «маркетинг» `1gbj-…`, лист «дпд» (ссылка на док) |
 | Напоминание о новой таблице | `monthly_reminder.py` | 1-го числа 09:00 | напоминание в ТГ завести таблицу на месяц | Telegram |
 | События по менеджерам | `events_export.py` | 01:35 | события по сделкам 7 менеджеров за текущий месяц (Аналитика → Список событий) | месячная таблица `SPREADSHEET_ID`, лист «События» |
+| Автозакрытие Первой линии | `close_stale_leads.py` | 07:00 | 27 дней от создания → задача ответственному; 30 дней → статус «Закрыто и не реализовано» + причина «Пропал/Не отвечает» | пишет в amoCRM (воронка 8733326) |
 
 Плюс в репо есть `BMI.io → Google Sheets` (выгрузка бюджета), запускается по цепочке.
 
@@ -37,7 +38,7 @@ cron GitHub на новом репозитории был ненадёжен. n8
 
 ## 3. Запуск по расписанию (cron-job.org)
 
-Личный кабинет: https://console.cron-job.org — **6 заданий**, у всех:
+Личный кабинет: https://console.cron-job.org — **7 заданий**, у всех:
 - **Method:** POST
 - **URL:** `https://api.github.com/repos/Gitelman-traning/amo-export/actions/workflows/<ФАЙЛ>.yml/dispatches`
 - **Headers:** `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`
@@ -52,10 +53,15 @@ cron GitHub на новом репозитории был ненадёжен. n8
 | Контакты 2026 | `second-line.yml` | `20 1 * * *` |
 | Транскрибация зумов | `zoom-transcribe.yml` | `20 1 * * *` |
 | События amoCRM | `events-export.yml` | `35 1 * * *` |
+| Автозакрытие Первой линии | `close-stale.yml` | `0 7 * * *` |
 | Добавить новый ID таблицы | `monthly-reminder.yml` | `0 9 1 * *` |
 
 Отчёты в ТГ (`tg-report.yml`) отдельным заданием НЕ дёргаются — они идут **по цепочке**
 (триггер `workflow_run`) сразу после успешной выгрузки amoCRM.
+
+**Особый случай — «Автозакрытие Первой линии»:** у этого задания тело запроса ДРУГОЕ,
+с явным боевым режимом, иначе прогон пройдёт вхолостую (workflow по умолчанию в dry-run):
+`{"ref":"main","inputs":{"dry_run":"false"}}`
 
 ---
 
@@ -123,9 +129,9 @@ Settings репозитория → Secrets and variables → Actions.
 
 Задания cron-job.org ходят по **GitHub fine-grained PAT** (права: репо `amo-export`, Actions: Read and write).
 - Срок жизни fine-grained максимум **~1 год**. Последнее продление: **08.07.2026**.
-- Когда истечёт — **все 6 заданий встанут** (будут ловить 401).
+- Когда истечёт — **все 7 заданий встанут** (будут ловить 401).
 - Продлить: https://github.com/settings/personal-access-tokens → токен → **Regenerate** →
-  новый срок → скопировать → обновить `Authorization: Bearer <новый>` во **всех 6 заданиях** cron-job.org → TEST RUN (204).
+  новый срок → скопировать → обновить `Authorization: Bearer <новый>` во **всех 7 заданиях** cron-job.org → TEST RUN (204).
 - Альтернатива, чтобы не продлевать: classic token с правами `repo`+`workflow` и «No expiration» (но шире по правам).
 
 ---
@@ -138,6 +144,13 @@ Settings репозитория → Secrets and variables → Actions.
 - **Колонка `transcribation` в «дпд»** — smart-chip. Скрипт пишет обычной ссылкой (рабочая, просто не кнопка-чип). Дедуп зумов — по непустому `transcribation`; ключ дедупа — ID сделки.
 - **Записи, добавленные в ZOOM после ночного прогона,** обработаются на следующем прогоне (раз в сутки). Хочешь чаще — поменяй crontab на несколько раз в день.
 - **cron-job.org — единый источник запуска.** Родной cron GitHub в воркфлоу выключен, чтобы не было дублей/ложных срабатываний.
+- **Автозакрытие Первой линии — это ЗАПИСЬ в боевой amoCRM.** `close_stale_leads.py` создаёт задачи
+  и закрывает сделки (статус 143 + причина «Пропал/Не отвечает»). Защиты: workflow по умолчанию
+  `dry_run=true` (плановое задание шлёт `dry_run=false` в теле), предохранитель `MAX_CLOSE_PER_RUN`,
+  идемпотентность задач. **Исключения** — файл `exclude_leads.txt` в репо (список id, разовый хвост
+  из 97 старых сделок от 03.08.2026, разбираются вручную) + тег в amoCRM «не автозакрывать»
+  (повесил на сделку → скрипт её не тронет; удобно как точечная защита из самой CRM).
+  Проверить, что попадёт под правило, без записи: Actions → «Автозакрытие Первой линии» → Run с `dry_run=true`.
 - **import_clients и IMPORTRANGE (была засада в августе).** Блок оплат в отчёте (Всего будущих
   участников / оплаты по месяцам / шортлист) берётся с листа `import_clients`. В шаблоне это был
   `IMPORTRANGE` из «Клиенты 2025». При копировании таблицы на новый месяц IMPORTRANGE требует
