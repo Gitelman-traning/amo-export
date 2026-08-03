@@ -53,6 +53,20 @@ def main():
             cell = v[0][0] if v and v[0] else ''
             print(f"\n=== Проверка!{addr} [{render}] ===\n{cell}")
 
+    # Блок продаж: метки (AC) + значения и формулы (AE), строки 15..68
+    lbl = ss.values().get(spreadsheetId=SPREADSHEET_ID, range="'Проверка'!AC15:AC68").execute().get('values', [])
+    val = ss.values().get(spreadsheetId=SPREADSHEET_ID, range="'Проверка'!AE15:AE68").execute().get('values', [])
+    frm = ss.values().get(spreadsheetId=SPREADSHEET_ID, range="'Проверка'!AE15:AE68",
+                          valueRenderOption='FORMULA').execute().get('values', [])
+    print("\n=== Проверка: AC(метка) | AE(значение) | AE(формула), строки 15-68 ===")
+    for i in range(54):
+        row = 15 + i
+        L = lbl[i][0] if i < len(lbl) and lbl[i] else ''
+        V = val[i][0] if i < len(val) and val[i] else ''
+        F = frm[i][0] if i < len(frm) and frm[i] else ''
+        if str(L).strip() or str(V).strip() or str(F).strip():
+            print(f"  {row}: [{L}] = [{V}]  <= {F}")
+
     # export_date на листе выгрузки
     print("\n=== export_date (KO/KP на 'общая выгрузка от Никиты') ===")
     try:
