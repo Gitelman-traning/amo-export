@@ -67,6 +67,18 @@ def main():
         if str(L).strip() or str(V).strip() or str(F).strip():
             print(f"  {row}: [{L}] = [{V}]  <= {F}")
 
+    # Границы периодов AH12:AH17 (+ соседние подписи AG) — значения и формулы
+    for render in ('FORMATTED_VALUE', 'FORMULA'):
+        ag = ss.values().get(spreadsheetId=SPREADSHEET_ID, range="'Проверка'!AG12:AG17",
+                             valueRenderOption=render).execute().get('values', [])
+        ah = ss.values().get(spreadsheetId=SPREADSHEET_ID, range="'Проверка'!AH12:AH17",
+                             valueRenderOption=render).execute().get('values', [])
+        print(f"\n=== Границы периодов AG/AH 12-17 [{render}] ===")
+        for i in range(6):
+            g = ag[i][0] if i < len(ag) and ag[i] else ''
+            h = ah[i][0] if i < len(ah) and ah[i] else ''
+            print(f"  {12+i}: AG=[{g}]  AH=[{h}]")
+
     # export_date на листе выгрузки
     print("\n=== export_date (KO/KP на 'общая выгрузка от Никиты') ===")
     try:
