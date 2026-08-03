@@ -111,7 +111,8 @@ def main():
 
     for col, name in (('AG', 'проведённые диагностики'), ('AR', 'продажи/оплаты'), ('M', 'дата лида')):
         d = ss.values().get(spreadsheetId=SPREADSHEET_ID,
-                            range=f"'⬇️ОБЩАЯ ВЫГРУЗКА'!{col}5:{col}9000").execute().get('values', [])
+                            range=f"'⬇️ОБЩАЯ ВЫГРУЗКА'!{col}5:{col}9000",
+                            valueRenderOption='UNFORMATTED_VALUE').execute().get('values', [])
         months = {}
         total = 0
         for r in d:
