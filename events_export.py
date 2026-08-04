@@ -23,7 +23,7 @@ import re
 import sys
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -201,18 +201,23 @@ CF_TYPE_RE = re.compile(r'^custom_field_(\d+)_value_changed$')
 # ============================================================
 
 def period_bounds():
-    """Границы периода в unix-времени (Москва). По умолчанию — текущий месяц."""
+    """Границы периода в unix-времени (Москва).
+    По умолчанию — от 1-го числа месяца ВЧЕРАШНЕГО дня по вчера включительно.
+    Почему по вчера: сегодняшний день ещё не закончен, а 1-го числа так корректно
+    дописывается ПРОШЛЫЙ месяц (вчера = последнее число прошлого месяца) в старую
+    таблицу — до того как SPREADSHEET_ID переключат на новую."""
     now = datetime.now(MSK)
+    ref = now - timedelta(days=1)   # вчера
     if DATE_FROM:
         d = datetime.strptime(DATE_FROM, '%d.%m.%Y')
         start = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=MSK)
     else:
-        start = datetime(now.year, now.month, 1, 0, 0, 0, tzinfo=MSK)
+        start = datetime(ref.year, ref.month, 1, 0, 0, 0, tzinfo=MSK)
     if DATE_TO:
         d = datetime.strptime(DATE_TO, '%d.%m.%Y')
         end = datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=MSK)
     else:
-        end = now
+        end = datetime(ref.year, ref.month, ref.day, 23, 59, 59, tzinfo=MSK)
     return int(start.timestamp()), int(end.timestamp()), start, end
 
 
@@ -846,30 +851,36 @@ def main():
     ctx['notes'] = fetch_notes(events)
     names = fetch_entity_names(events, ctx['tasks'])
     rows = build_rows(events, ctx, names)
-    authors = len({r['Автор'] for r in rows if r['Автор']})
-    print(f"Строк к записи: {len(rows)}, авторов: {authors}")
+    # Число событий (строк) по каждому менеджеру — для уведомления, по убыванию.
+    per_author = {}
+    for r in rows:
+        who = r['Автор'] or '—'
+        per_author[who] = per_author.get(who, 0) + 1
+    per_author = dict(sorted(per_author.items(), key=lambda x: -x[1]))
+    print(f"Строк к записи: {len(rows)}, менеджеров: {len(per_author)}")
+    for who, cnt in per_author.items():
+        print(f"  {who} - {cnt}")
 
     if DRY_RUN:
         print("DRY_RUN — в таблицу ничего не писали.")
-        for r in rows[:10]:
-            print(f"  {r['Дата']} | {r['Автор']} | {r['Объект']} | {r['Событие']} | "
-                  f"{r['Значение до'][:40]} → {r['Значение после'][:40]}")
-        return {'events': len(rows), 'authors': authors, 'from': d_from, 'to': d_to}
+        return {'events': len(rows), 'per_author': per_author, 'from': d_from, 'to': d_to}
 
     svc = sheets_service()
     write_sheet(svc, rows)
     print(f"ГОТОВО. Событий: {len(rows)}.")
-    return {'events': len(rows), 'authors': authors, 'from': d_from, 'to': d_to}
+    return {'events': len(rows), 'per_author': per_author, 'from': d_from, 'to': d_to}
 
 
 if __name__ == '__main__':
     try:
         s = main()
         if not DRY_RUN and not PROBE:
+            lines = "\n".join(f"{who} - {cnt}" for who, cnt in s['per_author'].items()) or "—"
             send_telegram(
                 f"✅ amoCRM события: выгружено\n"
                 f"Период: {s['from'].strftime('%d.%m.%Y')} — {s['to'].strftime('%d.%m.%Y')}\n"
-                f"Событий: {s['events']}, менеджеров: {s['authors']}\n"
+                f"Всего событий: {s['events']}\n\n"
+                f"{lines}\n\n"
                 f"Таблица: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
                 + run_url_line()
             )

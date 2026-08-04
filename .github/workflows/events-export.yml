@@ -32,6 +32,10 @@ on:
         description: 'Схлопывать серию действий по сделке за день в одну строку (true/false)'
         required: false
         default: 'true'
+      spreadsheet_id:
+        description: 'ID таблицы. Пусто = текущая из переменной SPREADSHEET_ID'
+        required: false
+        default: ''
       sheet_name:
         description: 'Название листа. Пусто = «События»'
         required: false
@@ -61,7 +65,7 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
+          SPREADSHEET_ID: ${{ inputs.spreadsheet_id || vars.SPREADSHEET_ID }}
           PROBE: ${{ inputs.probe }}
           DRY_RUN: ${{ inputs.dry_run }}
           MANAGERS_ONLY: ${{ inputs.managers_only }}
