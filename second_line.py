@@ -454,9 +454,23 @@ def ensure_sheet(svc, title):
         print(f"Создал лист «{title}»")
 
 
+def col_letter(n):
+    """Номер колонки (1-based) → буква Google Sheets: 1→A, 27→AA, 47→AU."""
+    s = ''
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
 def write_sheet(svc, sheet_name, columns, rows):
     values = svc.values()
-    values.clear(spreadsheetId=SECOND_LINE_SHEET_ID, range=f"'{sheet_name}'").execute()
+    # Чистим ТОЛЬКО колонки нашей выгрузки (A..последняя колонка данных).
+    # Для листа контактов это A:AU (47 колонок) — правее (AV+) ручные/формульные
+    # колонки Никиты, их не трогаем.
+    last_col = col_letter(len(columns))
+    values.clear(spreadsheetId=SECOND_LINE_SHEET_ID,
+                 range=f"'{sheet_name}'!A:{last_col}").execute()
     matrix = [columns] + [[safe_cell(r.get(c, '')) for c in columns] for r in rows]
     values.update(
         spreadsheetId=SECOND_LINE_SHEET_ID,
