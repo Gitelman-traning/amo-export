@@ -1,0 +1,42 @@
+name: Активность Первой линии
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Только проверка, без записи (true/false)'
+        required: false
+        default: 'true'
+      spreadsheet_id:
+        description: 'ID таблицы. Пусто = текущая из SPREADSHEET_ID'
+        required: false
+        default: ''
+      date_from:
+        description: 'Начало ДД.ММ.ГГГГ. Пусто = 1-е число месяца (вчера)'
+        required: false
+        default: ''
+      date_to:
+        description: 'Конец ДД.ММ.ГГГГ. Пусто = вчера'
+        required: false
+        default: ''
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python first_line_activity.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ inputs.spreadsheet_id || vars.SPREADSHEET_ID }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          DATE_FROM: ${{ inputs.date_from }}
+          DATE_TO: ${{ inputs.date_to }}
