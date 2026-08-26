@@ -34,8 +34,15 @@ import amo_export as ax  # переиспользуем amo_get / amo_fetch_all 
 # ============================================================
 
 PIPELINE_ID = 8733326                 # Первая линия
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "").strip()
-SHEET_NAME = os.environ.get("SHEET_NAME", "").strip() or "Активность 1-линии"
+
+# Отдельная таблица «Работа с базой» (НЕ месячная). Лист задаётся по gid.
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "").strip() or "10yyWMe_WapqnTZNKEvpRe1fLpst9T1S7iPFIB-rG3zo"
+SHEET_GID = os.environ.get("SHEET_GID", "").strip() or "1302963009"
+SHEET_NAME = os.environ.get("SHEET_NAME", "").strip()   # если пусто — резолвим по SHEET_GID
+
+# События тянем окнами по столько дней — у /api/v4/events есть предел глубины пагинации
+# (на ~22-23k событий отдаёт 408 «Too many data»); окно держит выборку небольшой.
+WINDOW_DAYS = 3
 
 DATE_FROM = os.environ.get("DATE_FROM", "").strip()   # ДД.ММ.ГГГГ (необяз.)
 DATE_TO = os.environ.get("DATE_TO", "").strip()
@@ -133,25 +140,35 @@ def fetch_manager_lead_events(ts_from, ts_to, user_ids=None):
         'filter[created_at][to]': ts_to,
         'filter[entity][]': 'lead',
     }
-    url, first, page, seen = '/api/v4/events', True, 0, 0
-    while url and page < 5000:
-        data = ax.amo_get(url, params if first else None)
-        first = False
-        evs = (data.get('_embedded') or {}).get('events') or []
-        if not evs:
-            break
-        for e in evs:
-            seen += 1
-            if str(e.get('created_by') or '0') == '0':
-                continue   # бот / Система — не «обработка менеджером»
-            eid = e.get('entity_id')
-            if eid:
-                out.append((eid, int(e.get('created_at') or 0)))
-        page += 1
-        if page % 25 == 0:
-            print(f"  ...events страница {page}, просмотрено {seen}, менеджерских {len(out)}")
-        url = ((data.get('_links') or {}).get('next') or {}).get('href')
-        time.sleep(REQUEST_INTERVAL)
+    seen = 0
+    win = WINDOW_DAYS * 86400
+    a = ts_from
+    while a <= ts_to:
+        b = min(a + win - 1, ts_to)
+        wp = dict(params)
+        wp['filter[created_at][from]'] = a
+        wp['filter[created_at][to]'] = b
+        url, first, page = '/api/v4/events', True, 0
+        while url and page < 5000:
+            data = ax.amo_get(url, wp if first else None)
+            first = False
+            evs = (data.get('_embedded') or {}).get('events') or []
+            if not evs:
+                break
+            for e in evs:
+                seen += 1
+                if str(e.get('created_by') or '0') == '0':
+                    continue   # бот / Система — не «обработка менеджером»
+                eid = e.get('entity_id')
+                if eid:
+                    out.append((eid, int(e.get('created_at') or 0)))
+            page += 1
+            url = ((data.get('_links') or {}).get('next') or {}).get('href')
+            time.sleep(REQUEST_INTERVAL)
+        wa = datetime.fromtimestamp(a, tz=MSK).strftime('%d.%m')
+        wb = datetime.fromtimestamp(b, tz=MSK).strftime('%d.%m')
+        print(f"  окно {wa}–{wb}: просмотрено всего {seen}, менеджерских {len(out)}")
+        a = b + 1
     print(f"  событий просмотрено: {seen}, менеджерских по сделкам: {len(out)}")
     return out
 
@@ -206,36 +223,39 @@ def sheets_values():
     return build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets()
 
 
-def ensure_sheet(svc, title, need_rows, need_cols):
+def resolve_sheet_name(svc):
+    """Название целевого листа: из SHEET_NAME, иначе по SHEET_GID."""
     meta = svc.get(spreadsheetId=SPREADSHEET_ID,
                    fields='sheets.properties(title,sheetId,gridProperties)').execute()
-    props = {s['properties']['title']: s['properties'] for s in meta.get('sheets', [])}
-    if title not in props:
-        svc.batchUpdate(spreadsheetId=SPREADSHEET_ID, body={'requests': [
-            {'addSheet': {'properties': {'title': title, 'gridProperties': {
-                'rowCount': need_rows, 'columnCount': need_cols}}}}]}).execute()
-        print(f"Создал лист «{title}»")
-        return
-    p = props[title]
-    grid = p.get('gridProperties') or {}
-    if (grid.get('rowCount') or 0) < need_rows or (grid.get('columnCount') or 0) < need_cols:
-        svc.batchUpdate(spreadsheetId=SPREADSHEET_ID, body={'requests': [
-            {'updateSheetProperties': {
-                'properties': {'sheetId': p['sheetId'], 'gridProperties': {
-                    'rowCount': max(grid.get('rowCount') or 0, need_rows),
-                    'columnCount': max(grid.get('columnCount') or 0, need_cols)}},
-                'fields': 'gridProperties.rowCount,gridProperties.columnCount'}}]}).execute()
+    sheets = [s['properties'] for s in meta.get('sheets', [])]
+    if SHEET_NAME:
+        return SHEET_NAME, next((p for p in sheets if p['title'] == SHEET_NAME), None)
+    for p in sheets:
+        if str(p.get('sheetId')) == str(SHEET_GID):
+            return p['title'], p
+    raise RuntimeError(f"Лист с gid={SHEET_GID} не найден в таблице {SPREADSHEET_ID}. "
+                       f"Есть листы: {[p['title'] for p in sheets]}")
 
 
 def write_sheet(svc, rows):
-    ensure_sheet(svc, SHEET_NAME, len(rows) + 10, len(COLUMNS))
+    title, props = resolve_sheet_name(svc)
+    need_rows, need_cols = len(rows) + 10, len(COLUMNS)
+    grid = (props or {}).get('gridProperties') or {}
+    if props and ((grid.get('rowCount') or 0) < need_rows or (grid.get('columnCount') or 0) < need_cols):
+        svc.batchUpdate(spreadsheetId=SPREADSHEET_ID, body={'requests': [
+            {'updateSheetProperties': {
+                'properties': {'sheetId': props['sheetId'], 'gridProperties': {
+                    'rowCount': max(grid.get('rowCount') or 0, need_rows),
+                    'columnCount': max(grid.get('columnCount') or 0, need_cols)}},
+                'fields': 'gridProperties.rowCount,gridProperties.columnCount'}}]}).execute()
     values = svc.values()
     # чистим только колонки выгрузки (правее не трогаем)
     values.clear(spreadsheetId=SPREADSHEET_ID,
-                 range=f"'{SHEET_NAME}'!A:{col_letter(len(COLUMNS))}").execute()
+                 range=f"'{title}'!A:{col_letter(len(COLUMNS))}").execute()
     matrix = [COLUMNS] + [[safe_cell(r.get(c, '')) for c in COLUMNS] for r in rows]
-    values.update(spreadsheetId=SPREADSHEET_ID, range=f"'{SHEET_NAME}'!A1",
+    values.update(spreadsheetId=SPREADSHEET_ID, range=f"'{title}'!A1",
                   valueInputOption='USER_ENTERED', body={'values': matrix}).execute()
+    print(f"Записано в лист «{title}»: {len(rows)} строк")
 
 
 # ============================================================
@@ -307,6 +327,11 @@ def main():
         print(f"  {m} - {c}")
 
     if DRY_RUN:
+        try:
+            title, _ = resolve_sheet_name(sheets_values())
+            print(f"Целевая таблица {SPREADSHEET_ID}, лист «{title}» — доступ есть.")
+        except Exception as ex:
+            print(f"ВНИМАНИЕ, проверка целевого листа: {ex}")
         print("DRY_RUN — в таблицу не пишу.")
         return {'rows': len(rows), 'per_mgr': per_mgr, 'from': d_from, 'to': d_to}
 
