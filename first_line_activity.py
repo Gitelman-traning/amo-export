@@ -122,9 +122,10 @@ def run_url_line():
 #  amoCRM
 # ============================================================
 
-def fetch_manager_lead_events(ts_from, ts_to, user_ids):
-    """События по сделкам, сделанные живыми менеджерами, за период.
-    Возвращает список (lead_id, ts). Фильтр created_by на стороне amo (только менеджеры)."""
+def fetch_manager_lead_events(ts_from, ts_to, user_ids=None):
+    """События по сделкам за период, сделанные живыми менеджерами (created_by != 0).
+    Возвращает список (lead_id, ts). Ботов/Систему (created_by == 0) отсеиваем у себя —
+    серверный фильтр filter[created_by] в events ограничен 10 значениями, а менеджеров ~100."""
     out = []
     params = {
         'limit': EVENTS_PAGE,
@@ -132,9 +133,7 @@ def fetch_manager_lead_events(ts_from, ts_to, user_ids):
         'filter[created_at][to]': ts_to,
         'filter[entity][]': 'lead',
     }
-    for i, uid in enumerate(user_ids):
-        params[f'filter[created_by][{i}]'] = uid
-    url, first, page = '/api/v4/events', True, 0
+    url, first, page, seen = '/api/v4/events', True, 0, 0
     while url and page < 5000:
         data = ax.amo_get(url, params if first else None)
         first = False
@@ -142,14 +141,18 @@ def fetch_manager_lead_events(ts_from, ts_to, user_ids):
         if not evs:
             break
         for e in evs:
+            seen += 1
+            if str(e.get('created_by') or '0') == '0':
+                continue   # бот / Система — не «обработка менеджером»
             eid = e.get('entity_id')
             if eid:
                 out.append((eid, int(e.get('created_at') or 0)))
         page += 1
-        if page % 20 == 0:
-            print(f"  ...events страница {page}, набрано {len(out)}")
+        if page % 25 == 0:
+            print(f"  ...events страница {page}, просмотрено {seen}, менеджерских {len(out)}")
         url = ((data.get('_links') or {}).get('next') or {}).get('href')
         time.sleep(REQUEST_INTERVAL)
+    print(f"  событий просмотрено: {seen}, менеджерских по сделкам: {len(out)}")
     return out
 
 
@@ -258,7 +261,7 @@ def main():
     user_ids = [u['id'] for u in users]
     print(f"Менеджеров в amo: {len(user_ids)}")
 
-    events = fetch_manager_lead_events(ts_from, ts_to, user_ids)
+    events = fetch_manager_lead_events(ts_from, ts_to)
     print(f"Событий менеджеров по сделкам за период: {len(events)}")
 
     lead_ids = {eid for eid, _ in events}
