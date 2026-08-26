@@ -62,3 +62,15 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+
+      # Активность Первой линии за месяц (контакты, которых касались менеджеры) →
+      # таблица «Работа с базой». Всегда боевой (это read из amo + запись в отдельную
+      # таблицу, ничего в amo не меняет). Прогон долгий — идёт последним.
+      - name: Активность Первой линии
+        if: ${{ always() }}
+        run: python first_line_activity.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
