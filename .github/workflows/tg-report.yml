@@ -19,7 +19,9 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 45 мин: в цепочке идут синк оплат, отчёт (пауза 240с), автозакрытие
+    # и тяжёлая активность 1-линии (~15 мин выкачки событий).
+    timeout-minutes: 45
     # При запуске по цепочке — только если выгрузка amoCRM прошла успешно.
     # При ручном запуске (workflow_dispatch) — всегда.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
