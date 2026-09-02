@@ -88,6 +88,24 @@ def main():
     for k, v in sorted(voronki.items(), key=lambda x: -x[1]):
         print(f"    «{k}»: {v}")
 
+    # Распределение НЕДЕЛЬНЫХ лидов (точное имя) по датам — где те 5 сверх 01.09
+    from datetime import datetime as _dt, timedelta as _td
+    def ser2date(s):
+        return (_dt(1899, 12, 30) + _td(days=int(s))).strftime('%d.%m.%Y')
+    bydate = {}
+    for i in range(max(len(M), len(D))):
+        try:
+            m = float(M[i][0])
+        except (ValueError, IndexError, TypeError):
+            continue
+        dv = D[i][0] if i < len(D) and D[i] else ''
+        if str(dv) == "Первая линия Продажи тренинга" and aw <= m <= bw:
+            k = math.floor(m)
+            bydate[k] = bydate.get(k, 0) + 1
+    print(f"\n=== Недельные лиды (01–07.09) по дате M ===")
+    for k in sorted(bydate):
+        print(f"    {ser2date(k)}: {bydate[k]}")
+
 
 if __name__ == '__main__':
     main()
