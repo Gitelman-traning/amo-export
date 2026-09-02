@@ -24,10 +24,26 @@ def main():
                         col = chr(ord('A') + j)
                         print(f"  {col}{i}: {str(c)[:260]}")
 
-    dump("'Проверка'!V14:W44", "Маркетинг V(кол-во)/W(источник)")
-    dump("'Проверка'!BG30:BG40", "Продажи BG (лиды/диагностики)")
-    dump("'Проверка'!AH12:AH17", "Границы периодов AH")
-    dump("'Проверка'!AE14:AF14", "Опорная дата продаж AE14")
+    cells = {
+        'V14 (маркетинг: опорная дата)': 'V14',
+        'V15 (маркетинг: дата до?)': 'V15',
+        'V16 (маркетинг: дата от?)': 'V16',
+        'V17 (Маркетинг ВСЕГО ЛИДОВ)': 'V17',
+        'BG32 (Продажи факт по лидам, неделя)': 'BG32',
+        'BG37 (Продажи факт по лидам, месяц)': 'BG37',
+        'AE14 (продажи опорная дата)': 'AE14',
+        'AH14 (неделя с)': 'AH14',
+        'AH15 (неделя по)': 'AH15',
+        'AH16 (месяц с)': 'AH16',
+        'AH17 (месяц по)': 'AH17',
+    }
+    for label, addr in cells.items():
+        fval = ss.values().get(spreadsheetId=SID, range=f"'Проверка'!{addr}").execute().get('values', [['']])
+        frm = ss.values().get(spreadsheetId=SID, range=f"'Проверка'!{addr}",
+                              valueRenderOption='FORMULA').execute().get('values', [['']])
+        val = fval[0][0] if fval and fval[0] else ''
+        fm = frm[0][0] if frm and frm[0] else ''
+        print(f"\n{label}: значение=[{val}]\n  формула: {fm}")
 
 
 if __name__ == '__main__':
