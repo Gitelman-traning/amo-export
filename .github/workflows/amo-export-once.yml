@@ -1,0 +1,35 @@
+name: amoCRM разовая выгрузка (в таблицу/период)
+
+# Отдельно от ночной «amoCRM → Google Sheets (выгрузка авто)», чтобы НЕ триггерить
+# цепочку tg-report. Для разовой перевыгрузки в конкретную таблицу за нужный период.
+
+on:
+  workflow_dispatch:
+    inputs:
+      spreadsheet_id:
+        description: 'ID таблицы (пусто = текущая из переменной)'
+        required: false
+        default: ''
+      date_to:
+        description: 'Верхняя граница ДД.ММ.ГГГГ (пусто = вчера). Напр. 31.08.2026'
+        required: false
+        default: ''
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python amo_export.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ inputs.spreadsheet_id || vars.SPREADSHEET_ID }}
+          DATE_TO: ${{ inputs.date_to }}

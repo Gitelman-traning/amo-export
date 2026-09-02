@@ -60,6 +60,12 @@ EXPORT_DATE_KEY_COL = "KO"      # колонка с ключами
 EXPORT_DATE_VALUE_COL = "KP"    # колонка со значениями
 
 TIMEZONE = "Europe/Moscow"
+
+# Необязательная верхняя граница периода (created_at) в формате ДД.ММ.ГГГГ.
+# Пусто = «вчера» (штатное поведение). Задаётся для разовой перевыгрузки за прошлый
+# период, напр. DATE_TO=31.08.2026 — чтобы в таблице последняя дата была 31 августа.
+DATE_TO_OVERRIDE = os.environ.get("DATE_TO", "").strip()
+
 AMO_PAGE_LIMIT = 250         # сколько сделок за одну страницу amo
 CONTACTS_PER_REQUEST = 200   # сколько контактов за один запрос
 REQUEST_INTERVAL = 0.5       # пауза между запросами к amo, сек
@@ -551,12 +557,18 @@ def main():
         sys.exit(1)
 
     msk = ZoneInfo(TIMEZONE)
-    yesterday = datetime.now(msk) - timedelta(days=1)
-    date_to_dt = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
-    date_from_dt = (yesterday - relativedelta(months=MONTHS_BACK)).replace(hour=0, minute=0, second=0, microsecond=0)
+    # Верхняя граница: по умолчанию «вчера», либо DATE_TO (разовая перевыгрузка).
+    if DATE_TO_OVERRIDE:
+        d = datetime.strptime(DATE_TO_OVERRIDE, '%d.%m.%Y')
+        ref = datetime(d.year, d.month, d.day, tzinfo=msk)
+        print(f"DATE_TO override: {DATE_TO_OVERRIDE}")
+    else:
+        ref = datetime.now(msk) - timedelta(days=1)
+    date_to_dt = ref.replace(hour=23, minute=59, second=59, microsecond=0)
+    date_from_dt = (ref - relativedelta(months=MONTHS_BACK)).replace(hour=0, minute=0, second=0, microsecond=0)
     date_to_ts = int(date_to_dt.timestamp())
     date_from_ts = int(date_from_dt.timestamp())
-    date_to_text = yesterday.strftime('%d.%m.%Y')
+    date_to_text = ref.strftime('%d.%m.%Y')
 
     print(f"Период выгрузки: {date_from_dt:%d.%m.%Y} — {date_to_dt:%d.%m.%Y} (created_at, МСК)")
 
