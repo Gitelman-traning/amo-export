@@ -44,6 +44,50 @@ def main():
         fm = frm[0][0] if frm and frm[0] else ''
         print(f"\n{label}: значение=[{val}]\n  формула: {fm}")
 
+    # ---- Разложение 35→40: считаем в '⬇️ОБЩАЯ ВЫГРУЗКА' сами ----
+    def num(addr):
+        v = ss.values().get(spreadsheetId=SID, range=f"'Проверка'!{addr}",
+                            valueRenderOption='UNFORMATTED_VALUE').execute().get('values', [['']])
+        try:
+            return float(v[0][0])
+        except (ValueError, IndexError, TypeError):
+            return None
+    day = num('V14')          # опорный день (маркетинг)
+    aw, bw = num('AH14'), num('AH15')   # неделя
+    print(f"\nГраницы (serial): день={day}, неделя=[{aw}..{bw}]")
+
+    M = ss.values().get(spreadsheetId=SID, range="'⬇️ОБЩАЯ ВЫГРУЗКА'!M5:M20000",
+                        valueRenderOption='UNFORMATTED_VALUE').execute().get('values', [])
+    D = ss.values().get(spreadsheetId=SID, range="'⬇️ОБЩАЯ ВЫГРУЗКА'!D5:D20000").execute().get('values', [])
+    import math
+    a = b = c = d = 0
+    voronki = {}
+    for i in range(max(len(M), len(D))):
+        try:
+            m = float(M[i][0])
+        except (ValueError, IndexError, TypeError):
+            continue
+        dv = D[i][0] if i < len(D) and D[i] else ''
+        exact = (str(dv) == "Первая линия Продажи тренинга")
+        star = str(dv).startswith("Первая линия ")
+        if star:
+            voronki[str(dv)] = voronki.get(str(dv), 0) + 1
+        is_day = day is not None and math.floor(m) == math.floor(day)
+        is_week = aw is not None and bw is not None and aw <= m <= bw
+        if is_day and exact: a += 1
+        if is_day and star:  b += 1
+        if is_week and exact: c += 1
+        if is_week and star:  d += 1
+    print(f"\n=== РАЗЛОЖЕНИЕ (лиды в ⬇️ОБЩАЯ ВЫГРУЗКА) ===")
+    print(f"  A день+точное имя  = {a}   (маркетинг V17 = 35)")
+    print(f"  B день+звёздочка    = {b}")
+    print(f"  C неделя+точное имя = {c}")
+    print(f"  D неделя+звёздочка  = {d}   (продажи 40)")
+    print(f"  → вклад периода (C-A): {c-a}; вклад звёздочки за неделю (D-C): {d-c}")
+    print(f"\nВоронки, начинающиеся с «Первая линия », среди лидов:")
+    for k, v in sorted(voronki.items(), key=lambda x: -x[1]):
+        print(f"    «{k}»: {v}")
+
 
 if __name__ == '__main__':
     main()
