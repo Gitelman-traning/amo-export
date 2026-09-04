@@ -3,6 +3,15 @@ name: OnlinePBX → Google Sheets (звонки)
 on:
   # Запуск приходит извне (cron-job.org → GitHub API), плюс ручной из UI.
   workflow_dispatch:
+    inputs:
+      spreadsheet_id:
+        description: 'ID таблицы (пусто = текущая из переменной)'
+        required: false
+        default: ''
+      date_to:
+        description: 'Верхняя граница ДД.ММ.ГГГГ (пусто = вчера). Напр. 31.08.2026'
+        required: false
+        default: ''
 
 jobs:
   export:
@@ -18,6 +27,7 @@ jobs:
         env:
           ONLINEPBX_AUTH_KEY: ${{ secrets.ONLINEPBX_AUTH_KEY }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID }}
+          SPREADSHEET_ID: ${{ inputs.spreadsheet_id || vars.SPREADSHEET_ID }}
+          DATE_TO: ${{ inputs.date_to }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

@@ -33,6 +33,10 @@ SHEET_NAME = "общая выгрузка от Никиты ЗВОНКИ"   # в
 CHUNK_DAYS = 7              # размер окна запроса к OnlinePBX
 TIMEZONE = "Europe/Moscow"
 
+# Необязательная верхняя граница периода (ДД.ММ.ГГГГ). Пусто = «вчера» (штатно).
+# Для разовой перевыгрузки за прошлый месяц, напр. DATE_TO=31.08.2026 → [01.08..31.08].
+DATE_TO_OVERRIDE = os.environ.get("DATE_TO", "").strip()
+
 # Колонки в порядке записи (как в n8n)
 COLUMNS = [
     'Тип звонка', 'Кто', 'Кому', 'Внешний номер', 'Дата',
@@ -114,7 +118,11 @@ def pbx_auth():
 
 def build_chunks():
     """Окна [1-е число месяца 00:00:01 .. вчера 23:59:59] по МСК, кусками по CHUNK_DAYS."""
-    yesterday = (datetime.now(MSK) - timedelta(days=1)).date()
+    if DATE_TO_OVERRIDE:
+        yesterday = datetime.strptime(DATE_TO_OVERRIDE, '%d.%m.%Y').date()
+        print(f"DATE_TO override: {DATE_TO_OVERRIDE}")
+    else:
+        yesterday = (datetime.now(MSK) - timedelta(days=1)).date()
     start_date = yesterday.replace(day=1)
     chunks = []
     cur = start_date
