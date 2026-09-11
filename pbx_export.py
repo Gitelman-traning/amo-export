@@ -185,6 +185,10 @@ def main():
     chunks, d_from, d_to = build_chunks()
     print(f"Период звонков: {d_from:%d.%m.%Y} — {d_to:%d.%m.%Y} ({len(chunks)} окон)")
 
+    # Не пишем в таблицу прошлого месяца, если забыли переключить SPREADSHEET_ID
+    import month_guard
+    month_guard.guard_or_exit("Звонки OnlinePBX", SPREADSHEET_ID, d_to, GOOGLE_SA_JSON, send_telegram)
+
     rows = []
     for c_from, c_to in chunks:
         calls = fetch_calls(api_key, c_from, c_to)

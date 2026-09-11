@@ -71,6 +71,14 @@ def main():
         print("ОШИБКА: нет переменных окружения: " + ", ".join(missing))
         sys.exit(1)
 
+    # Не трогаем таблицу прошлого месяца, если забыли переключить SPREADSHEET_ID
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    import month_guard
+    ref = datetime.now(ZoneInfo("Europe/Moscow")) - timedelta(days=1)   # «вчера»
+    month_guard.guard_or_exit("Синхронизация import_clients", SPREADSHEET_ID, ref,
+                              GOOGLE_SA_JSON, send_telegram)
+
     creds = Credentials.from_service_account_info(
         json.loads(GOOGLE_SA_JSON), scopes=['https://www.googleapis.com/auth/spreadsheets'])
     values = build('sheets', 'v4', credentials=creds, cache_discovery=False).spreadsheets().values()

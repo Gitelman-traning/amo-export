@@ -572,6 +572,10 @@ def main():
 
     print(f"Период выгрузки: {date_from_dt:%d.%m.%Y} — {date_to_dt:%d.%m.%Y} (created_at, МСК)")
 
+    # Не пишем в таблицу прошлого месяца, если забыли переключить SPREADSHEET_ID
+    import month_guard
+    month_guard.guard_or_exit("amoCRM выгрузка", SPREADSHEET_ID, ref, GOOGLE_SA_JSON, send_telegram)
+
     # --- справочники ---
     print("Тяну пользователей и воронки...")
     users = amo_fetch_all('/api/v4/users', {'limit': 250}, 'users')

@@ -798,6 +798,11 @@ def main():
 
     ts_from, ts_to, d_from, d_to = period_bounds()
     print(f"Период: {d_from.strftime('%d.%m.%Y %H:%M')} — {d_to.strftime('%d.%m.%Y %H:%M')} (МСК)")
+
+    # Не пишем в таблицу прошлого месяца, если забыли переключить SPREADSHEET_ID
+    if not PROBE and not DRY_RUN:
+        import month_guard
+        month_guard.guard_or_exit("События amoCRM", SPREADSHEET_ID, d_to, GOOGLE_SA_JSON, send_telegram)
     print(f"Таблица: {SPREADSHEET_ID}, лист «{SHEET_NAME}»"
           + (" [DRY_RUN]" if DRY_RUN else "") + (" [PROBE]" if PROBE else ""))
 

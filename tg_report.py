@@ -95,6 +95,21 @@ def main():
         print("ОШИБКА: нет TELEGRAM_BOT_TOKEN (или включите DRY_RUN=1)")
         sys.exit(1)
 
+    # Не публикуем отчёт из таблицы прошлого месяца (если забыли переключить SPREADSHEET_ID)
+    if not DRY_RUN:
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        import month_guard
+
+        def _tg(text):
+            if TELEGRAM_BOT_TOKEN:
+                chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+                if chat:
+                    send_telegram(chat, text)
+
+        ref = datetime.now(ZoneInfo("Europe/Moscow")) - timedelta(days=1)   # «вчера»
+        month_guard.guard_or_exit("Публикация отчётов", SPREADSHEET_ID, ref, GOOGLE_SA_JSON, _tg)
+
     if START_DELAY and not DRY_RUN:
         print(f"Жду {START_DELAY}с, чтобы таблица пересчитала формулы после выгрузки...")
         time.sleep(START_DELAY)
