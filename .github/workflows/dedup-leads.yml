@@ -1,0 +1,41 @@
+name: Дубли сделок (закрыть лишние)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Только показать, без записи в amoCRM (true/false)'
+        required: false
+        default: 'true'
+      pipeline_ids:
+        description: 'ID воронок через запятую (пусто = все). Напр. 8733326'
+        required: false
+        default: ''
+      days_back:
+        description: 'Период создания, дней назад (0 = вся база)'
+        required: false
+        default: '90'
+      max_close_per_run:
+        description: 'Предохранитель: макс. закрытий за прогон'
+        required: false
+        default: '300'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python dedup_leads.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PIPELINE_IDS: ${{ inputs.pipeline_ids }}
+          DAYS_BACK: ${{ inputs.days_back }}
+          MAX_CLOSE_PER_RUN: ${{ inputs.max_close_per_run }}
