@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - run: python probe_recent.py
+      - run: python probe_lead.py
         env:
           AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
           LEAD_ID: ${{ inputs.lead_id }}
