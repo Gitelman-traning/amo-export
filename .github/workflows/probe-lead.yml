@@ -1,0 +1,29 @@
+name: Диагностика сделки/контакта (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      lead_id:
+        description: 'ID сделки'
+        required: false
+        default: ''
+      phone:
+        description: 'Телефон для поиска контакта'
+        required: false
+        default: ''
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python probe_lead.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          LEAD_ID: ${{ inputs.lead_id }}
+          PHONE: ${{ inputs.phone }}
