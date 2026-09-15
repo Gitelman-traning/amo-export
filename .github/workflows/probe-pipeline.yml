@@ -1,0 +1,24 @@
+name: Этапы воронки (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pipeline_id:
+        description: 'ID воронки'
+        required: false
+        default: '11304934'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python probe_pipeline.py
+        env:
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          PIPELINE_ID: ${{ inputs.pipeline_id }}
