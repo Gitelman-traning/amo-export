@@ -1,0 +1,45 @@
+name: Заявки на оплату сервисов
+
+on:
+  # Каждый день в 09:00 МСК с 24-го по 31-е. Скрипт сам решает, тот ли это день:
+  # подаём за 5 рабочих дней до 5-го числа месяца оплаты, в остальные дни тихо выходит.
+  schedule:
+    - cron: "0 6 24-31 * *"
+  workflow_dispatch:
+    inputs:
+      pay_month:
+        description: "Месяц оплаты YYYY-MM (пусто = следующий месяц)"
+        required: false
+      aed_rate:
+        description: "Курс AED в ₽ (пусто = ячейка R16 на листе Wazzup расход, а если и она пустая — курс дня)"
+        required: false
+      usd_rate:
+        description: "Курс USD в ₽ (пусто = ячейка B29 главного листа / курс дня)"
+        required: false
+      dry_run:
+        description: "Только показать в логе, без таблицы и Telegram"
+        type: boolean
+        default: false
+
+jobs:
+  requests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python service_payments.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SERVICE_PAY_CHAT_ID: ${{ vars.SERVICE_PAY_CHAT_ID }}
+          SERVICES_SPREADSHEET_ID: ${{ vars.SERVICES_SPREADSHEET_ID }}
+          PAY_MONTH: ${{ inputs.pay_month }}
+          AED_RATE: ${{ inputs.aed_rate }}
+          USD_RATE: ${{ inputs.usd_rate }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '' }}
+          RUN_MODE: ${{ github.event_name == 'schedule' && 'schedule' || 'manual' }}
