@@ -20,6 +20,10 @@ on:
         description: "Только показать в логе, без таблицы и Telegram"
         type: boolean
         default: false
+      only_links:
+        description: "Повтор: прислать только ссылки на заявки, без свода и записи в таблицу"
+        type: boolean
+        default: false
 
 jobs:
   requests:
@@ -42,4 +46,5 @@ jobs:
           AED_RATE: ${{ inputs.aed_rate }}
           USD_RATE: ${{ inputs.usd_rate }}
           DRY_RUN: ${{ inputs.dry_run == true && '1' || '' }}
+          ONLY_LINKS: ${{ inputs.only_links == true && '1' || '' }}
           RUN_MODE: ${{ github.event_name == 'schedule' && 'schedule' || 'manual' }}

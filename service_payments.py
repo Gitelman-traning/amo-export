@@ -114,6 +114,9 @@ RULES = [
 # Строки главного листа, после которых сервисы заканчиваются
 STOP_ROWS = ("итого", "без амо")
 
+# Сколько символов (вместе с URL) кладём в одно сообщение со ссылками
+LINKS_CHUNK_LIMIT = 3000
+
 # Расписание: подаём за N рабочих дней до 5-го числа месяца оплаты
 DAYS_BEFORE = 5
 PAY_DAY = 5
@@ -126,6 +129,7 @@ TELEGRAM_CHAT_ID = (os.environ.get("SERVICE_PAY_CHAT_ID", "").strip()
 DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 LOCAL_DIR = os.environ.get("SHEETS_LOCAL_DIR", "").strip()
 RUN_MODE = os.environ.get("RUN_MODE", "manual").strip().lower()
+ONLY_LINKS = os.environ.get("ONLY_LINKS", "").strip().lower() in ("1", "true", "yes")   # повтор: без свода и таблицы
 
 MONTHS_NOM = ["январь", "февраль", "март", "апрель", "май", "июнь",
               "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
@@ -582,15 +586,25 @@ def build_messages(res, date, links, rates, rate_sources):
         lines += [f"⚠️ {html_escape(w)}" for w in res.warnings]
     msg1 = "\n".join(lines)
 
-    # 2) ссылки на заявки
-    lines = [f"<b>Заявки в форму — {len(links)} шт.</b>",
-             "Открой ссылку, добавь скриншот согласования, нажми «Отправить». "
-             "Если форма спросит про черновик — жми «Продолжить»."]
+    # 2) ссылки на заявки — Telegram не принимает много длинных URL в одном сообщении
+    #    (ENTITIES_TOO_LONG), поэтому режем на части с запасом
+    head = [f"<b>Заявки в форму — {len(links)} шт.</b>",
+            "Открой ссылку, добавь скриншот согласования, нажми «Отправить». "
+            "Если форма спросит про черновик — жми «Продолжить»."]
+    items = []
     for i, (req, link) in enumerate(zip(res.requests, links), 1):
-        lines.append(f'{i}. <a href="{link}">{html_escape(req.service)} — {DEPT_LABEL[req.dept]}</a>: '
+        items.append(f'{i}. <a href="{link}">{html_escape(req.service)} — {DEPT_LABEL[req.dept]}</a>: '
                      f"{fmt_pay(req)}" + ("" if req.pay_currency == "RUB" else f" (= {fmt_rub(req.amount_rub)})"))
-    lines.append(f"\nИстория: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID} → лист «{OUT_SHEET}»")
-    msg2 = "\n".join(lines)
+    tail = f"История: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID} → лист «{OUT_SHEET}»"
+    parts, cur = [], list(head)
+    for item in items:
+        if sum(len(x) for x in cur) + len(item) > LINKS_CHUNK_LIMIT and len(cur) > len(head):
+            parts.append("\n".join(cur))
+            cur = []
+        cur.append(item)
+    cur.append("\n" + tail)
+    parts.append("\n".join(cur))
+    msg2 = parts
     return msg1, msg2
 
 
@@ -598,9 +612,16 @@ def send_telegram(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram пропущен (нет TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID).")
         return
-    r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                      json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML",
-                            "disable_web_page_preview": True}, timeout=30)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    body = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    r = requests.post(url, json=body, timeout=30)
+    if r.status_code == 400 and "<a href" in text:
+        # HTML-ссылки не прошли (ENTITIES_TOO_LONG и т.п.) — шлём тот же текст голыми адресами
+        plain = re.sub(r'<a href="([^"]+)">([^<]*)</a>', lambda m: m.group(2) + chr(10) + m.group(1), text)
+        plain = re.sub(r"<[^>]+>", "", plain).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        print(f"Telegram не принял HTML ({r.text[:120]}), повторяю без разметки.")
+        r = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": plain,
+                                     "disable_web_page_preview": True}, timeout=30)
     if r.status_code != 200:
         print(f"Telegram не принял ({r.status_code}): {r.text[:300]}")
         raise SystemExit(1)
@@ -665,15 +686,19 @@ def main():
         print("\n--- DRY_RUN: в таблицу не пишу, в Telegram не шлю ---\n")
         print(re.sub(r"<[^>]+>", "", msg1))
         print()
-        print(re.sub(r"<[^>]+>", "", msg2)[:1500])
+        for part in msg2:
+            print(re.sub(r"<[^>]+>", "", part)[:600], "…", end="\n\n")
+        print(f"Сообщений со ссылками: {len(msg2)}, длины: {[len(p) for p in msg2]}")
         return
 
-    if not LOCAL_DIR:
-        write_out_sheet(src, res, today, links)
-        print(f"Лист «{OUT_SHEET}» обновлён.")
-    send_telegram(msg1)
-    send_telegram(msg2)
-    print("Отправлено в Telegram.")
+    if not ONLY_LINKS:
+        if not LOCAL_DIR:
+            write_out_sheet(src, res, today, links)
+            print(f"Лист «{OUT_SHEET}» обновлён.")
+        send_telegram(msg1)
+    for part in msg2:
+        send_telegram(part)
+    print(f"Отправлено в Telegram: {'' if ONLY_LINKS else 'свод + '}{len(msg2)} сообщ. со ссылками.")
 
 
 if __name__ == "__main__":
