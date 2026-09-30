@@ -359,6 +359,13 @@ RATE_CELLS = {
 }
 
 
+def as_rub_per_unit(v):
+    """Курс в таблице/переменной может быть записан как «₽ за 1 $» (84,06) или как в банке
+    «$ за 1 ₽» (0,011339). Всё, что меньше единицы, считаем вторым форматом и переворачиваем."""
+    v = float(v)
+    return (1.0 / v, True) if 0 < v < 1 else (v, False)
+
+
 def resolve_rates(src):
     """→ (rates, sources). Приоритет: переменная AED_RATE/USD_RATE (ручной запуск) →
     ячейка из RATE_CELLS → API → для AED запасной пересчёт через привязку 3.6725 AED за $."""
@@ -369,11 +376,13 @@ def resolve_rates(src):
         if env:
             v, _ = parse_money(env)
             if v:
-                rates[cur], sources[cur] = v, "задан при запуске"
+                v, flipped = as_rub_per_unit(v)
+                rates[cur], sources[cur] = v, "задан при запуске" + (" как валюта за 1 ₽" if flipped else "")
                 continue
         v, _ = parse_money(src.get(sheet, f"{cell}:{cell}")[0][0])
         if v:
-            rates[cur], sources[cur] = v, f"из таблицы, {sheet}!{cell}"
+            v, flipped = as_rub_per_unit(v)
+            rates[cur], sources[cur] = v, f"из таблицы, {sheet}!{cell}" + (" (валюта за 1 ₽)" if flipped else "")
             continue
         if api is None and api_err is None:
             try:
@@ -636,18 +645,22 @@ def fmt_pay(req):
 
 
 OUT_HEADER = ["Подано", "Сформировано", "Период", "Сервис", "Отдел", "Статья расхода", "Сумма ₽",
-              "Сумма заявки", "Валюта", "Курс", "Описание в форме", "Ссылка на заявку", "Примечание"]
+              "Сумма заявки", "Валюта", "Курс: валюта за 1 ₽", "Описание в форме", "Ссылка на заявку", "Примечание"]
+RATE_DIGITS = 6   # 1 ₽ = 0,011339 $
 
 
 def write_out_sheet(src, res, date, links):
     """Лист «Заявки»: A — галочка «Подано» (ставишь руками, переживает перезапись за тот же месяц).
-    Для заявок в валюте колонка J «Курс» редактируемая: H «Сумма заявки» = G/J (или, если сумма
-    из счёта, G = H×J), а L «Ссылка» — формула, собирающая адрес формы из ячеек строки.
+    Для заявок в валюте колонка J редактируемая и записана как в банке — «валюта за 1 ₽»
+    (1 ₽ = 0,011339 $): H «Сумма заявки» = G×J (если сумма из счёта — G = H/J; если в таблице $,
+    а платим ₽ — G = $/J), а L «Ссылка» — формула, собирающая адрес формы из ячеек строки.
     Строки других периодов переносятся как есть (с формулами)."""
     src.ensure_sheet(OUT_SHEET)
     period = period_label(res.month, res.year)
     existing = src.get_formulas(OUT_SHEET, "A1:M2000")
     old_header = [str(h).strip() for h in existing[0]] if existing and any(existing[0]) else []
+    if "Курс" in old_header:                       # старая шапка
+        old_header[old_header.index("Курс")] = "Курс: валюта за 1 ₽"
     col = {name: (old_header.index(name) if name in old_header else None) for name in OUT_HEADER}
 
     def cell(row, name):
@@ -670,15 +683,16 @@ def write_out_sheet(src, res, date, links):
     for i, (req, link) in enumerate(zip(res.requests, links)):
         r = first + i
         by_invoice = "по счёту" in (req.note or "")
+        per_rub = round(1.0 / req.rate, RATE_DIGITS) if req.rate else ""
         if req.pay_currency == "RUB" and req.src_currency != "RUB":
-            # платим рублями, а в таблице $: рубли = $ × курс (J редактируемый)
-            g, h, j = f"=ROUND({req.src_amount:g}*J{r})", f"=G{r}", round(req.rate, 4)
+            # платим рублями, а в таблице $: рубли = $ / (валюта за 1 ₽)
+            g, h, j = f"=ROUND({req.src_amount:g}/J{r})", f"=G{r}", per_rub
         elif req.pay_currency == "RUB":
             g, h, j = req.amount_rub, req.amount_rub, ""
         elif by_invoice:                       # сумма заявки зафиксирована счётом, рубли — от курса
-            g, h, j = f"=ROUND(H{r}*J{r})", req.pay_amount, round(req.rate, 4)
-        else:                                  # рубли из таблицы, валюта — от курса
-            g, h, j = req.amount_rub, f"=ROUND(G{r}/J{r};2)", round(req.rate, 4)
+            g, h, j = f"=ROUND(H{r}/J{r})", req.pay_amount, per_rub
+        else:                                  # рубли из таблицы, валюта = ₽ × (валюта за 1 ₽)
+            g, h, j = req.amount_rub, f"=ROUND(G{r}*J{r};2)", per_rub
         rows.append([done.get((req.service, req.dept), False),
                      date.strftime("%d.%m.%Y"), period, req.service, req.dept, req.article,
                      g, h, req.pay_currency, j,
