@@ -402,6 +402,8 @@ class Request:
     pay_amount: float = 0.0
     rate: float = 1.0
     note: str = ""
+    src_amount: float = 0.0        # сумма в валюте таблицы (например 100 USD), если она не рубли
+    src_currency: str = "RUB"
 
     @property
     def article(self):
@@ -556,8 +558,14 @@ def build(src, month, year, rates):
                 amt = pay_amt * rate
             else:
                 pay_amt = round(amt) if pay_cur == "RUB" else round(amt / rate, 2)
-            res.requests.append(Request(service=rule["label"], dept=dept, amount_rub=round(amt),
-                                        pay_currency=pay_cur, pay_amount=pay_amt, rate=rate, note=note))
+            req = Request(service=rule["label"], dept=dept, amount_rub=round(amt),
+                          pay_currency=pay_cur, pay_amount=pay_amt, rate=rate, note=note)
+            if cur != "RUB":                              # в таблице $100 → запоминаем долю в долларах
+                req.src_amount = round(value * parts[dept] / total_parts, 2)
+                req.src_currency = cur
+                req.rate = rates[cur]
+                req.note = (note + "; " if note else "") + f"{req.src_amount:g} {cur} × курс"
+            res.requests.append(req)
     return res
 
 
@@ -662,7 +670,10 @@ def write_out_sheet(src, res, date, links):
     for i, (req, link) in enumerate(zip(res.requests, links)):
         r = first + i
         by_invoice = "по счёту" in (req.note or "")
-        if req.pay_currency == "RUB":
+        if req.pay_currency == "RUB" and req.src_currency != "RUB":
+            # платим рублями, а в таблице $: рубли = $ × курс (J редактируемый)
+            g, h, j = f"=ROUND({req.src_amount:g}*J{r})", f"=G{r}", round(req.rate, 4)
+        elif req.pay_currency == "RUB":
             g, h, j = req.amount_rub, req.amount_rub, ""
         elif by_invoice:                       # сумма заявки зафиксирована счётом, рубли — от курса
             g, h, j = f"=ROUND(H{r}*J{r})", req.pay_amount, round(req.rate, 4)
