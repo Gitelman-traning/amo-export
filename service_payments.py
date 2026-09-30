@@ -213,6 +213,18 @@ class SheetSource:
         return out
 
     # --- запись ---
+    def get_formulas(self, sheet, rng):
+        """Как get, но формулы возвращаются текстом формулы, а не значением."""
+        r0, c0, r1, c1 = parse_a1(rng)
+        resp = self._svc.values().get(spreadsheetId=SPREADSHEET_ID, range=f"'{sheet}'!{rng}",
+                                      valueRenderOption="FORMULA").execute()
+        rows = resp.get("values", [])
+        out = []
+        for r in range(r1 - r0 + 1):
+            row = rows[r] if r < len(rows) else []
+            out.append([(row[c] if c < len(row) else "") for c in range(c1 - c0 + 1)])
+        return out
+
     def sheets(self):
         meta = self._svc.get(spreadsheetId=SPREADSHEET_ID, fields="sheets.properties.title").execute()
         return [s["properties"]["title"] for s in meta.get("sheets", [])]
@@ -581,6 +593,29 @@ def prefill_url(req, month, year, date):
     return FORM_URL + "?" + urlencode(params)
 
 
+def link_formula(row, date):
+    """Формула HYPERLINK для строки листа «Заявки»: адрес формы собирается из ячеек
+    этой же строки (сумма H, валюта I, описание K, период C, статья F), поэтому правка
+    курса в J или суммы пересчитывает ссылку сама."""
+    fixed = urlencode([
+        ("usp", "pp_url"),
+        (ENTRY["department"], FORM_FIXED["department"]),
+        (ENTRY["person"], FORM_FIXED["person"]),
+        (ENTRY["date"] + "_year", f"{date.year}"),
+        (ENTRY["date"] + "_month", f"{date.month:02d}"),
+        (ENTRY["date"] + "_day", f"{date.day:02d}"),
+    ])
+    tail = urlencode([(ENTRY["project"], FORM_FIXED["project"]), (ENTRY["in_budget"], FORM_FIXED["in_budget"])])
+    r = row
+    amount = f'IF(I{r}="RUB",TEXT(H{r},"0"),SUBSTITUTE(TEXT(H{r},"0.00"),",","."))'
+    return (f'=HYPERLINK("{FORM_URL}?{fixed}&{ENTRY["amount"]}="&{amount}'
+            f'&"&{ENTRY["currency"]}="&I{r}'
+            f'&"&{ENTRY["description"]}="&ENCODEURL(K{r})'
+            f'&"&{ENTRY["period"]}="&ENCODEURL(C{r})'
+            f'&"&{ENTRY["article"]}="&ENCODEURL(F{r})'
+            f'&"&{tail}","Открыть заявку")')
+
+
 def fmt_rub(v):
     return f"{v:,.0f} ₽".replace(",", " ")
 
@@ -596,12 +631,13 @@ OUT_HEADER = ["Подано", "Сформировано", "Период", "Се�
 
 
 def write_out_sheet(src, res, date, links):
-    """Лист «Заявки»: колонка A — галочка «Подано», её ставишь руками по ходу подачи.
-    Строки этого периода перезаписываются, галочки переносятся по паре (сервис, отдел);
-    строки других периодов не трогаем."""
+    """Лист «Заявки»: A — галочка «Подано» (ставишь руками, переживает перезапись за тот же месяц).
+    Для заявок в валюте колонка J «Курс» редактируемая: H «Сумма заявки» = G/J (или, если сумма
+    из счёта, G = H×J), а L «Ссылка» — формула, собирающая адрес формы из ячеек строки.
+    Строки других периодов переносятся как есть (с формулами)."""
     src.ensure_sheet(OUT_SHEET)
     period = period_label(res.month, res.year)
-    existing = src.get(OUT_SHEET, "A1:M2000")
+    existing = src.get_formulas(OUT_SHEET, "A1:M2000")
     old_header = [str(h).strip() for h in existing[0]] if existing and any(existing[0]) else []
     col = {name: (old_header.index(name) if name in old_header else None) for name in OUT_HEADER}
 
@@ -611,7 +647,7 @@ def write_out_sheet(src, res, date, links):
 
     keep, done = [], {}
     for row in existing[1:]:
-        if not any(row):
+        if not any(str(x).strip() for x in row):
             continue
         if cell(row, "Период") != period:
             r = [cell(row, name) for name in OUT_HEADER]
@@ -621,15 +657,28 @@ def write_out_sheet(src, res, date, links):
             done[(cell(row, "Сервис"), cell(row, "Отдел"))] = str(cell(row, "Подано")).strip().upper() == "TRUE"
 
     rows = []
-    for req, link in zip(res.requests, links):
+    first = 2 + len(keep)                      # номер первой строки этого периода на листе
+    for i, (req, link) in enumerate(zip(res.requests, links)):
+        r = first + i
+        by_invoice = "по счёту" in (req.note or "")
+        if req.pay_currency == "RUB":
+            g, h, j = req.amount_rub, req.amount_rub, ""
+        elif by_invoice:                       # сумма заявки зафиксирована счётом, рубли — от курса
+            g, h, j = f"=ROUND(H{r}*J{r})", req.pay_amount, round(req.rate, 4)
+        else:                                  # рубли из таблицы, валюта — от курса
+            g, h, j = req.amount_rub, f"=ROUND(G{r}/J{r},2)", round(req.rate, 4)
         rows.append([done.get((req.service, req.dept), False),
                      date.strftime("%d.%m.%Y"), period, req.service, req.dept, req.article,
-                     req.amount_rub, req.pay_amount, req.pay_currency,
-                     (round(req.rate, 4) if req.pay_currency != "RUB" else ""),
-                     description(req, res.month, res.year), link, req.note])
+                     g, h, req.pay_currency, j,
+                     description(req, res.month, res.year), link_formula(r, date), req.note])
     src.clear(OUT_SHEET, "A1:M2000")
     src.write(OUT_SHEET, "A1", [OUT_HEADER] + keep + rows)
     src.checkboxes(OUT_SHEET, 0, 2, 1 + len(keep) + len(rows))
+
+    # контроль: перечитываем посчитанные значения этого периода
+    back = src.get(OUT_SHEET, f"A{first}:L{first + len(rows) - 1}")
+    for row in back:
+        print(f"    лист: {row[3]:14s} {row[4]:8s} {row[7]:>10s} {row[8]:3s} курс {row[9]:>8s}  {row[11][:16]}")
 
 
 def html_escape(s):
