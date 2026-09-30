@@ -607,13 +607,14 @@ def link_formula(row, date):
     ])
     tail = urlencode([(ENTRY["project"], FORM_FIXED["project"]), (ENTRY["in_budget"], FORM_FIXED["in_budget"])])
     r = row
-    amount = f'IF(I{r}="RUB",TEXT(H{r},"0"),SUBSTITUTE(TEXT(H{r},"0.00"),",","."))'
+    # русская локаль таблицы: аргументы через «;», дробная часть через «,» → для адреса меняем на точку
+    amount = f'SUBSTITUTE(IF(I{r}="RUB";ROUND(H{r};0);ROUND(H{r};2))&"";",";".")'
     return (f'=HYPERLINK("{FORM_URL}?{fixed}&{ENTRY["amount"]}="&{amount}'
             f'&"&{ENTRY["currency"]}="&I{r}'
             f'&"&{ENTRY["description"]}="&ENCODEURL(K{r})'
             f'&"&{ENTRY["period"]}="&ENCODEURL(C{r})'
             f'&"&{ENTRY["article"]}="&ENCODEURL(F{r})'
-            f'&"&{tail}","Открыть заявку")')
+            f'&"&{tail}";"Открыть заявку")')
 
 
 def fmt_rub(v):
@@ -666,7 +667,7 @@ def write_out_sheet(src, res, date, links):
         elif by_invoice:                       # сумма заявки зафиксирована счётом, рубли — от курса
             g, h, j = f"=ROUND(H{r}*J{r})", req.pay_amount, round(req.rate, 4)
         else:                                  # рубли из таблицы, валюта — от курса
-            g, h, j = req.amount_rub, f"=ROUND(G{r}/J{r},2)", round(req.rate, 4)
+            g, h, j = req.amount_rub, f"=ROUND(G{r}/J{r};2)", round(req.rate, 4)
         rows.append([done.get((req.service, req.dept), False),
                      date.strftime("%d.%m.%Y"), period, req.service, req.dept, req.article,
                      g, h, req.pay_currency, j,
