@@ -103,6 +103,9 @@ RULES = [
     {"key": "wazzupp waba", "label": "Wazzup WABA", "split": "1-линия", "pay": "RUB"},
     {"key": "wazzupp whatsupp", "label": "Wazzup", "split": "блок:wazzup", "pay": "AED",
      "invoice": (WAZ_SHEET, "R17")},   # «счёт AED» — сумма счёта с НДС; заполнена → делим её, а не рубли
+    # любое другое «Wazzupp …» (строку в таблице переименовывали) — то же, что подписка Wazzup
+    {"key": "wazzupp", "label": "Wazzup", "split": "блок:wazzup", "pay": "AED", "invoice": (WAZ_SHEET, "R17")},
+    {"key": "wazzup", "label": "Wazzup", "split": "блок:wazzup", "pay": "AED", "invoice": (WAZ_SHEET, "R17")},
     {"key": "телеграмм премиум", "label": "Telegram Premium", "split": "прочее", "pay": "RUB"},
     {"key": "amocrm", "label": "amoCRM", "split": "пропустить", "pay": "RUB"},
     {"key": "виджет триггеры", "label": "Виджет Триггеры (amoCRM)", "split": "прочее", "pay": "RUB"},
