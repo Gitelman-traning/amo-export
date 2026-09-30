@@ -93,13 +93,16 @@ DEPT_LABEL = {"1-линия": "1 линия", "2-линия": "2 линия", "�
 #     "1-линия" / "2-линия" / "прочее" → вся сумма на один отдел
 #     "пропустить" → не подаём (AMO платится раз в год)
 # pay   — валюта заявки: RUB или AED (сумма в таблице в ₽ переводится по курсу)
+# invoice — (лист, ячейка) с суммой СЧЁТА в валюте заявки; если заполнена, заявки делят её
+#           по долям отделов из блока, а рубли считаются от неё по курсу
 RULES = [
     {"key": "баланс телефонии kz", "label": "Телефония KZ", "split": "прочее", "pay": "RUB"},
     {"key": "баланс телефонии", "label": "Телефония", "split": "телефония", "pay": "RUB"},
     {"key": "атс online pbx", "label": "АТС OnlinePBX", "split": "блок:атс", "pay": "RUB"},
     {"key": "wazzupp waba баланс", "label": "Wazzup WABA баланс", "split": "1-линия", "pay": "RUB"},
     {"key": "wazzupp waba", "label": "Wazzup WABA", "split": "1-линия", "pay": "RUB"},
-    {"key": "wazzupp whatsupp", "label": "Wazzup", "split": "блок:wazzup", "pay": "AED"},
+    {"key": "wazzupp whatsupp", "label": "Wazzup", "split": "блок:wazzup", "pay": "AED",
+     "invoice": (WAZ_SHEET, "R17")},   # «счёт AED» — сумма счёта с НДС; заполнена → делим её, а не рубли
     {"key": "телеграмм премиум", "label": "Telegram Premium", "split": "прочее", "pay": "RUB"},
     {"key": "amocrm", "label": "amoCRM", "split": "пропустить", "pay": "RUB"},
     {"key": "виджет триггеры", "label": "Виджет Триггеры (amoCRM)", "split": "прочее", "pay": "RUB"},
@@ -130,6 +133,7 @@ DRY_RUN = os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 LOCAL_DIR = os.environ.get("SHEETS_LOCAL_DIR", "").strip()
 RUN_MODE = os.environ.get("RUN_MODE", "manual").strip().lower()
 ONLY_LINKS = os.environ.get("ONLY_LINKS", "").strip().lower() in ("1", "true", "yes")   # повтор: без свода и таблицы
+SHEET_ONLY = os.environ.get("SHEET_ONLY", "").strip().lower() in ("1", "true", "yes")   # только обновить лист «Заявки»
 
 MONTHS_NOM = ["январь", "февраль", "март", "апрель", "май", "июнь",
               "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
@@ -221,6 +225,24 @@ class SheetSource:
 
     def clear(self, sheet, rng):
         self._svc.values().clear(spreadsheetId=SPREADSHEET_ID, range=f"'{sheet}'!{rng}").execute()
+
+    def sheet_id(self, title):
+        meta = self._svc.get(spreadsheetId=SPREADSHEET_ID, fields="sheets.properties").execute()
+        for sh in meta.get("sheets", []):
+            if sh["properties"]["title"] == title:
+                return sh["properties"]["sheetId"]
+        raise KeyError(title)
+
+    def checkboxes(self, sheet, col_idx, row_from, row_to):
+        """Флажки в колонке col_idx (0 = A) на строках row_from..row_to (1 = первая), шапка закреплена."""
+        sid = self.sheet_id(sheet)
+        rng = {"sheetId": sid, "startRowIndex": row_from - 1, "endRowIndex": row_to,
+               "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1}
+        self._svc.batchUpdate(spreadsheetId=SPREADSHEET_ID, body={"requests": [
+            {"setDataValidation": {"range": rng, "rule": {"condition": {"type": "BOOLEAN"}, "strict": True}}},
+            {"updateSheetProperties": {"properties": {"sheetId": sid, "gridProperties": {"frozenRowCount": 1}},
+                                       "fields": "gridProperties.frozenRowCount"}},
+        ]}).execute()
 
 
 # ============================================================
@@ -492,11 +514,33 @@ def build(src, month, year, rates):
         # валюта заявки
         pay_cur = rule["pay"]
         rate = 1.0 if pay_cur == "RUB" else rates[pay_cur]
-        for dept in DEPTS:
-            amt = parts.get(dept, 0.0)
-            if amt <= 0:
-                continue
-            pay_amt = round(amt) if pay_cur == "RUB" else round(amt / rate, 2)
+
+        # сумма по счёту (например Wazzup: счёт в AED с НДС) — делим её по долям отделов
+        invoice_total = None
+        if rule.get("invoice"):
+            inv_sheet, inv_cell = rule["invoice"]
+            invoice_total, _ = parse_money(src.get(inv_sheet, f"{inv_cell}:{inv_cell}")[0][0])
+            if invoice_total:
+                note = (note + "; " if note else "") + f"по счёту {invoice_total:,.2f} {pay_cur}".replace(",", " ")
+                res.summary[-1] = (rule["label"], invoice_total * rate, pay_cur, invoice_total)
+            else:
+                res.warnings.append(f"«{name}»: ячейка счёта {inv_sheet}!{inv_cell} пустая — "
+                                    f"сумма посчитана из рублей по курсу, впиши сумму счёта и перезапусти.")
+
+        total_parts = sum(v for v in parts.values() if v > 0) or 1.0
+        pending = [d for d in DEPTS if parts.get(d, 0.0) > 0]
+        left = invoice_total
+        for i, dept in enumerate(pending):
+            amt = parts[dept]
+            if invoice_total:
+                if i == len(pending) - 1:
+                    pay_amt = round(left, 2)                      # остаток — чтобы сумма сошлась со счётом
+                else:
+                    pay_amt = round(invoice_total * amt / total_parts, 2)
+                    left -= pay_amt
+                amt = pay_amt * rate
+            else:
+                pay_amt = round(amt) if pay_cur == "RUB" else round(amt / rate, 2)
             res.requests.append(Request(service=rule["label"], dept=dept, amount_rub=round(amt),
                                         pay_currency=pay_cur, pay_amount=pay_amt, rate=rate, note=note))
     return res
@@ -544,21 +588,45 @@ def fmt_pay(req):
     return f"{req.pay_amount:,.2f} {req.pay_currency}".replace(",", " ")
 
 
-def write_out_sheet(src, res, date, links):
-    src.ensure_sheet(OUT_SHEET)
-    header = ["Сформировано", "Период", "Сервис", "Отдел", "Статья расхода", "Сумма ₽",
+OUT_HEADER = ["Подано", "Сформировано", "Период", "Сервис", "Отдел", "Статья расхода", "Сумма ₽",
               "Сумма заявки", "Валюта", "Курс", "Описание в форме", "Ссылка на заявку", "Примечание"]
+
+
+def write_out_sheet(src, res, date, links):
+    """Лист «Заявки»: колонка A — галочка «Подано», её ставишь руками по ходу подачи.
+    Строки этого периода перезаписываются, галочки переносятся по паре (сервис, отдел);
+    строки других периодов не трогаем."""
+    src.ensure_sheet(OUT_SHEET)
     period = period_label(res.month, res.year)
-    existing = src.get(OUT_SHEET, "A1:L2000")
-    keep = [r for r in existing[1:] if any(r) and r[1] != period]   # старые периоды оставляем
+    existing = src.get(OUT_SHEET, "A1:M2000")
+    old_header = [str(h).strip() for h in existing[0]] if existing and any(existing[0]) else []
+    col = {name: (old_header.index(name) if name in old_header else None) for name in OUT_HEADER}
+
+    def cell(row, name):
+        i = col.get(name)
+        return row[i] if i is not None and i < len(row) else ""
+
+    keep, done = [], {}
+    for row in existing[1:]:
+        if not any(row):
+            continue
+        if cell(row, "Период") != period:
+            r = [cell(row, name) for name in OUT_HEADER]
+            r[0] = str(r[0]).strip().upper() == "TRUE"
+            keep.append(r)
+        else:
+            done[(cell(row, "Сервис"), cell(row, "Отдел"))] = str(cell(row, "Подано")).strip().upper() == "TRUE"
+
     rows = []
     for req, link in zip(res.requests, links):
-        rows.append([date.strftime("%d.%m.%Y"), period, req.service, req.dept, req.article,
+        rows.append([done.get((req.service, req.dept), False),
+                     date.strftime("%d.%m.%Y"), period, req.service, req.dept, req.article,
                      req.amount_rub, req.pay_amount, req.pay_currency,
                      (round(req.rate, 4) if req.pay_currency != "RUB" else ""),
                      description(req, res.month, res.year), link, req.note])
-    src.clear(OUT_SHEET, "A1:L2000")
-    src.write(OUT_SHEET, "A1", [header] + keep + rows)
+    src.clear(OUT_SHEET, "A1:M2000")
+    src.write(OUT_SHEET, "A1", [OUT_HEADER] + keep + rows)
+    src.checkboxes(OUT_SHEET, 0, 2, 1 + len(keep) + len(rows))
 
 
 def html_escape(s):
@@ -595,7 +663,7 @@ def build_messages(res, date, links, rates, rate_sources):
     for i, (req, link) in enumerate(zip(res.requests, links), 1):
         items.append(f'{i}. <a href="{link}">{html_escape(req.service)} — {DEPT_LABEL[req.dept]}</a>: '
                      f"{fmt_pay(req)}" + ("" if req.pay_currency == "RUB" else f" (= {fmt_rub(req.amount_rub)})"))
-    tail = f"История: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID} → лист «{OUT_SHEET}»"
+    tail = f"Отмечать поданные: лист «{OUT_SHEET}», колонка «Подано» — https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
     parts, cur = [], list(head)
     for item in items:
         if sum(len(x) for x in cur) + len(item) > LINKS_CHUNK_LIMIT and len(cur) > len(head):
@@ -691,10 +759,13 @@ def main():
         print(f"Сообщений со ссылками: {len(msg2)}, длины: {[len(p) for p in msg2]}")
         return
 
+    if not ONLY_LINKS and not LOCAL_DIR:
+        write_out_sheet(src, res, today, links)
+        print(f"Лист «{OUT_SHEET}» обновлён.")
+    if SHEET_ONLY:
+        print("SHEET_ONLY: в Telegram не шлю.")
+        return
     if not ONLY_LINKS:
-        if not LOCAL_DIR:
-            write_out_sheet(src, res, today, links)
-            print(f"Лист «{OUT_SHEET}» обновлён.")
         send_telegram(msg1)
     for part in msg2:
         send_telegram(part)

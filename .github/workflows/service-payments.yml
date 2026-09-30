@@ -24,6 +24,10 @@ on:
         description: "Повтор: прислать только ссылки на заявки, без свода и записи в таблицу"
         type: boolean
         default: false
+      sheet_only:
+        description: "Только обновить лист «Заявки» (галочки «Подано» сохраняются), в Telegram не слать"
+        type: boolean
+        default: false
 
 jobs:
   requests:
@@ -47,4 +51,5 @@ jobs:
           USD_RATE: ${{ inputs.usd_rate }}
           DRY_RUN: ${{ inputs.dry_run == true && '1' || '' }}
           ONLY_LINKS: ${{ inputs.only_links == true && '1' || '' }}
+          SHEET_ONLY: ${{ inputs.sheet_only == true && '1' || '' }}
           RUN_MODE: ${{ github.event_name == 'schedule' && 'schedule' || 'manual' }}
