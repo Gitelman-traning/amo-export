@@ -352,7 +352,8 @@ def compute(y, m, staff, bank_fee):
 
     row = {"label": f"{label} факт", "paid": round(paid_total),
            "subscription": round(subscription) if subscription is not None else "",
-           "total": round(grand), "commission": round(commission), "bank_fee": bank_fee}
+           "total": round(grand), "commission": round(commission), "bank_fee": bank_fee,
+           "topup": round(grand - commission)}
     for d in DEPTS:
         row[d] = round(totals[d])
         row[d + "_pct"] = round(100 * totals[d] / grand, 1) if grand else ""
@@ -373,23 +374,25 @@ def ceil_1000(v):
 
 
 def forecast_row(fact, y, m):
-    """Прогноз на следующий месяц = факт этого месяца по отделам, округлённый вверх до 1 000 ₽."""
+    """Прогноз на следующий месяц. Итог К ОПЛАТЕ (с комиссией банка) округляется вверх до 1 000 ₽,
+    пополнение BMI = итог / (1 + комиссия), комиссия — в прочее. Пополнение делится между
+    отделами по долям факта (платные звонки + абонентка, без комиссии)."""
     ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
-    row = {"label": f"{MONTHS_RU[nm - 1]} {ny} прогноз",
-           "paid": fact["paid"], "subscription": fact["subscription"]}
     fee = fact.get("bank_fee", BANK_FEE_DEFAULT)
-    base = {d: ceil_1000(fact[d]) for d in LINES}
-    other_base = fact["прочее"] - fact.get("commission", 0)        # прочее без комиссии факта
-    commission = (sum(base.values()) + other_base) * fee
-    row["commission"] = round(commission)
-    row["1-линия"], row["2-линия"] = base["1-линия"], base["2-линия"]
-    row["прочее"] = ceil_1000(other_base + commission)
+    base = {d: fact[d] for d in DEPTS}
+    base["прочее"] -= fact.get("commission", 0)                 # прочее факта без комиссии
+    base_sum = sum(base.values()) or 1.0
+    total = ceil_1000(fact["total"])                            # к оплате, круглая сумма с комиссией
+    topup = round(total / (1 + fee))                            # что вводить в пополнение BMI
+    commission = total - topup
+    row = {"label": f"{MONTHS_RU[nm - 1]} {ny} прогноз", "paid": fact["paid"], "subscription": fact["subscription"],
+           "total": total, "topup": topup, "commission": commission}
+    parts = {d: round(topup * base[d] / base_sum) for d in LINES}
+    parts["прочее"] = topup - sum(parts.values())               # остаток — чтобы сумма сошлась
     for d in DEPTS:
-        row[d + "_calls_pct"] = fact[d + "_calls_pct"]
-    total = sum(row[d] for d in DEPTS)
-    row["total"] = total
-    for d in DEPTS:
+        row[d] = parts[d] + (commission if d == "прочее" else 0)
         row[d + "_pct"] = round(100 * row[d] / total, 1) if total else ""
+        row[d + "_calls_pct"] = fact[d + "_calls_pct"]
     return row
 
 
@@ -397,7 +400,8 @@ def forecast_row(fact, y, m):
 #  ВЫВОД НА ЛИСТ
 # ============================================================
 
-SUMMARY_COLS = 11
+SUMMARY_COLS = 12
+TOPUP_HEADER = "Пополнение BMI ₽"
 MANAGER_COLS = 8
 
 
@@ -413,7 +417,7 @@ def summary_rows(results):
     for r in rows:
         out.append([r["label"], r["paid"], r["subscription"], r["total"],
                     r["1-линия"], r["1-линия_pct"], r["2-линия"], r["2-линия_pct"], r["прочее"], r["прочее_pct"],
-                    f'{r["1-линия_calls_pct"]} / {r["2-линия_calls_pct"]} / {r["прочее_calls_pct"]}'])
+                    f'{r["1-линия_calls_pct"]} / {r["2-линия_calls_pct"]} / {r["прочее_calls_pct"]}', r["topup"]])
     return out
 
 
@@ -429,7 +433,7 @@ def title_line():
     return (f"Телефония по факту: BMI × АТС (обновлено {stamp}). Платные звонки — по цене из BMI на менеджера → отдел; "
             f"абонентка = акт BMI − платные звонки (без акта — по тарифу) и делится по доле звонков отдела; "
             f"номер без отдела → прочее; комиссия банка ({BANK_FEE_CELL}) от итога — в прочее; "
-            f"прогноз = факт последнего месяца, округлённый вверх до 1 000 ₽.")
+            f"прогноз: итог к оплате (с комиссией) = факт, округлённый вверх до 1 000 ₽; пополнение BMI = итог / (1 + комиссия).")
 
 
 def write_sheet(sheet, results):
@@ -452,6 +456,8 @@ def write_sheet(sheet, results):
             sheet.clear(f"{col_letter(col0)}{first_data}:{col_letter(col0 + max(old_cols, n_cols) - 1)}{first_data + max(old_rows, len(rows)) - 1}")
             # хвост справа от таблицы (старая колонка «Примечание» и т.п.) — чистим вместе с шапкой
             sheet.clear(f"{col_letter(col0 + n_cols)}{first_data - 1}:{col_letter(col0 + max(old_cols, n_cols) + 1)}{first_data + max(old_rows, len(rows)) - 1}")
+            if n_cols > old_cols and table is summ:              # новая колонка — подписываем шапку
+                sheet.write(f"{col_letter(col0 + old_cols)}{first_data - 1}", [[TOPUP_HEADER]])
             sheet.write(f"{col_letter(col0)}{first_data}", rows)
             sheet.resize_table(table, len(rows), n_cols)
             print(f"  таблица «{table.get('name')}»: {len(rows)} строк × {n_cols} колонок (было {old_rows} × {old_cols})")
@@ -460,7 +466,7 @@ def write_sheet(sheet, results):
     # запасной вариант: без таблиц Google
     rows = [[title_line()],
             ["Месяц", "Платные звонки ₽", "Абонентка ₽", "Итого ₽", "1 линия ₽", "1 линия %", "2 линия ₽", "2 линия %",
-             "Прочее ₽", "Прочее %", "Доля звонков 1 / 2 / прочее"]] + s_rows + [[], ["По менеджерам"],
+             "Прочее ₽", "Прочее %", "Доля звонков 1 / 2 / прочее", TOPUP_HEADER]] + s_rows + [[], ["По менеджерам"],
             ["Месяц", "Номер", "Менеджер", "Отдел", "Звонков", "Минут", "Платных звонков", "Платные ₽"]] + m_rows
     sheet.clear(OUT_CLEAR)
     sheet.write(f"{OUT_COL_FROM}{OUT_ANCHOR_ROW}", rows)
