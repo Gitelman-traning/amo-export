@@ -1,0 +1,30 @@
+name: Проба телефонии (BMI + OnlinePBX, только лог)
+
+on:
+  workflow_dispatch:
+    inputs:
+      date_from:
+        description: "С какой даты YYYY-MM-DD"
+        required: false
+        default: "2026-09-01"
+      date_to:
+        description: "По какую дату YYYY-MM-DD"
+        required: false
+        default: "2026-09-02"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python probe_telephony.py
+        env:
+          BMI_API_KEY: ${{ secrets.BMI_API_KEY }}
+          ONLINEPBX_AUTH_KEY: ${{ secrets.ONLINEPBX_AUTH_KEY }}
+          PROBE_FROM: ${{ inputs.date_from }}
+          PROBE_TO: ${{ inputs.date_to }}
