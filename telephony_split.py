@@ -422,8 +422,8 @@ def write_sheet(sheet, results):
             first_data = r["startRowIndex"] + 2                      # 1-based номер первой строки данных
             # очищаем старые данные (и лишние колонки), затем пишем новые и подгоняем границы
             sheet.clear(f"{col_letter(col0)}{first_data}:{col_letter(col0 + max(old_cols, n_cols) - 1)}{first_data + max(old_rows, len(rows)) - 1}")
-            if old_cols > n_cols:
-                sheet.clear(f"{col_letter(col0 + n_cols)}{first_data - 1}:{col_letter(col0 + old_cols - 1)}{first_data - 1}")
+            # хвост справа от таблицы (старая колонка «Примечание» и т.п.) — чистим вместе с шапкой
+            sheet.clear(f"{col_letter(col0 + n_cols)}{first_data - 1}:{col_letter(col0 + max(old_cols, n_cols) + 1)}{first_data + max(old_rows, len(rows)) - 1}")
             sheet.write(f"{col_letter(col0)}{first_data}", rows)
             sheet.resize_table(table, len(rows), n_cols)
             print(f"  таблица «{table.get('name')}»: {len(rows)} строк × {n_cols} колонок (было {old_rows} × {old_cols})")
