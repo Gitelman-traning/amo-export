@@ -25,6 +25,7 @@ DRY_RUN=1 — только лог.
 
 import os
 import io
+import math
 import csv
 import json
 import re
@@ -202,6 +203,26 @@ class Sheet:
         self.svc.values().update(spreadsheetId=SPREADSHEET_ID, range=f"'{TEL_SHEET}'!{rng}",
                                  valueInputOption="USER_ENTERED", body={"values": values}).execute()
 
+    def tables(self):
+        """Таблицы Google (формат «Преобразовать в таблицу») на листе: [{tableId, name, range}]."""
+        meta = self.svc.get(spreadsheetId=SPREADSHEET_ID,
+                            fields="sheets(properties(title,sheetId),tables(tableId,name,range))").execute()
+        for sh in meta.get("sheets", []):
+            if sh["properties"]["title"] == TEL_SHEET:
+                self.sheet_id = sh["properties"]["sheetId"]
+                return sh.get("tables", []) or []
+        return []
+
+    def resize_table(self, table, n_rows, n_cols):
+        """Подгоняет границы таблицы: n_rows строк данных (без шапки), n_cols колонок."""
+        r = table["range"]
+        new = {"sheetId": r["sheetId"], "startRowIndex": r["startRowIndex"], "endRowIndex": r["startRowIndex"] + 1 + n_rows,
+               "startColumnIndex": r["startColumnIndex"], "endColumnIndex": r["startColumnIndex"] + n_cols}
+        if new != r:
+            self.svc.batchUpdate(spreadsheetId=SPREADSHEET_ID, body={"requests": [
+                {"updateTable": {"table": {"tableId": table["tableId"], "range": new}, "fields": "range"}}]}).execute()
+        return new
+
 
 def read_staff(sheet):
     """→ {ext: (имя, отдел|None)} из A:G листа «Телефония расход»."""
@@ -309,11 +330,11 @@ def compute(y, m, staff):
     totals = {d: per_dept[d]["paid"] + pool * call_share[d] for d in DEPTS}
     grand = sum(totals.values())
 
-    row = {"label": label, "paid": round(paid_total, 2),
-           "subscription": round(subscription, 2) if subscription is not None else "",
-           "total": round(grand, 2)}
+    row = {"label": f"{label} факт", "paid": round(paid_total),
+           "subscription": round(subscription) if subscription is not None else "",
+           "total": round(grand)}
     for d in DEPTS:
-        row[d] = round(totals[d], 2)
+        row[d] = round(totals[d])
         row[d + "_pct"] = round(100 * totals[d] / grand, 1) if grand else ""
         row[d + "_calls_pct"] = round(100 * call_share[d], 1)
     row["note"] = (f"{act_note}; сопоставлено {matched}, не найдено {unmatched} ({unmatched_paid:,.0f} ₽)"
@@ -323,32 +344,114 @@ def compute(y, m, staff):
           f"итого {grand:,.0f} ₽".replace(",", " "))
     print("   доля звонков:", {d: f"{100 * call_share[d]:.1f}%" for d in DEPTS})
     print("   итог по отделам:", {d: (row[d], row[d + "_pct"]) for d in DEPTS})
-    return {"label": label, "row": row, "ext_rows": ext_rows}
+    return {"label": label, "row": row, "ext_rows": ext_rows, "y": y, "m": m}
+
+
+def ceil_1000(v):
+    return int(math.ceil(float(v) / 1000.0) * 1000) if v else 0
+
+
+def forecast_row(fact, y, m):
+    """Прогноз на следующий месяц = факт этого месяца по отделам, округлённый вверх до 1 000 ₽."""
+    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+    row = {"label": f"{MONTHS_RU[nm - 1]} {ny} прогноз",
+           "paid": fact["paid"], "subscription": fact["subscription"]}
+    for d in DEPTS:
+        row[d] = ceil_1000(fact[d])
+        row[d + "_calls_pct"] = fact[d + "_calls_pct"]
+    total = sum(row[d] for d in DEPTS)
+    row["total"] = total
+    for d in DEPTS:
+        row[d + "_pct"] = round(100 * row[d] / total, 1) if total else ""
+    return row
 
 
 # ============================================================
 #  ВЫВОД НА ЛИСТ
 # ============================================================
 
-def build_matrix(results):
-    stamp = dt.datetime.now(MSK).strftime("%d.%m.%Y %H:%M")
-    rows = [[f"Телефония по факту: BMI × АТС (обновлено {stamp}). Платные звонки — по цене из BMI на менеджера → отдел; "
-             f"абонентка = акт BMI − платные звонки и делится по доле звонков отдела; номер без отдела → прочее."]]
-    rows.append(["Месяц", "Платные звонки ₽", "Абонентка ₽", "Итого ₽",
-                 "1 линия ₽", "1 линия %", "2 линия ₽", "2 линия %", "Прочее ₽", "Прочее %",
-                 "Доля звонков 1 / 2 / прочее", "Примечание"])
+SUMMARY_COLS = 11
+MANAGER_COLS = 8
+
+
+def summary_rows(results):
+    """Строки сводки: факт по каждому месяцу + прогноз на месяц после последнего."""
+    rows = []
     for res in results:
         r = res["row"]
-        rows.append([r["label"], r["paid"], r["subscription"], r["total"],
-                     r["1-линия"], r["1-линия_pct"], r["2-линия"], r["2-линия_pct"], r["прочее"], r["прочее_pct"],
-                     f'{r["1-линия_calls_pct"]} / {r["2-линия_calls_pct"]} / {r["прочее_calls_pct"]}', r["note"]])
-    rows.append([])
-    rows.append(["По менеджерам"])
-    rows.append(["Месяц", "Номер", "Менеджер", "Отдел", "Звонков", "Минут", "Платных звонков", "Платные ₽"])
+        rows.append(r)
+    last = results[-1]
+    rows.append(forecast_row(last["row"], last["y"], last["m"]))
+    out = []
+    for r in rows:
+        out.append([r["label"], r["paid"], r["subscription"], r["total"],
+                    r["1-линия"], r["1-линия_pct"], r["2-линия"], r["2-линия_pct"], r["прочее"], r["прочее_pct"],
+                    f'{r["1-линия_calls_pct"]} / {r["2-линия_calls_pct"]} / {r["прочее_calls_pct"]}'])
+    return out
+
+
+def manager_rows(results):
+    out = []
     for res in results:
-        rows.extend(res["ext_rows"])
-        rows.append([])
-    return rows
+        out.extend(res["ext_rows"])
+    return out
+
+
+def title_line():
+    stamp = dt.datetime.now(MSK).strftime("%d.%m.%Y %H:%M")
+    return (f"Телефония по факту: BMI × АТС (обновлено {stamp}). Платные звонки — по цене из BMI на менеджера → отдел; "
+            f"абонентка = акт BMI − платные звонки (без акта — по тарифу) и делится по доле звонков отдела; "
+            f"номер без отдела → прочее; прогноз = факт последнего месяца, округлённый вверх до 1 000 ₽.")
+
+
+def write_sheet(sheet, results):
+    """Пишет значения ВНУТРЬ таблиц Google на листе (формат Никиты сохраняется), подгоняя их размер.
+    Если таблиц нет — пишет блоками от O21 как раньше."""
+    s_rows = summary_rows(results)
+    m_rows = manager_rows(results)
+    col0 = col_index(OUT_COL_FROM)
+    tables = [t for t in sheet.tables() if t["range"].get("startColumnIndex") == col0
+              and t["range"].get("startRowIndex", 0) >= OUT_ANCHOR_ROW - 1]
+    tables.sort(key=lambda t: t["range"]["startRowIndex"])
+    sheet.write(f"{OUT_COL_FROM}{OUT_ANCHOR_ROW}", [[title_line()]])
+    if len(tables) >= 2:
+        summ, mgr = tables[0], tables[1]
+        for table, rows, n_cols, header in ((summ, s_rows, SUMMARY_COLS, None), (mgr, m_rows, MANAGER_COLS, None)):
+            r = table["range"]
+            old_rows, old_cols = r["endRowIndex"] - r["startRowIndex"] - 1, r["endColumnIndex"] - r["startColumnIndex"]
+            first_data = r["startRowIndex"] + 2                      # 1-based номер первой строки данных
+            # очищаем старые данные (и лишние колонки), затем пишем новые и подгоняем границы
+            sheet.clear(f"{col_letter(col0)}{first_data}:{col_letter(col0 + max(old_cols, n_cols) - 1)}{first_data + max(old_rows, len(rows)) - 1}")
+            if old_cols > n_cols:
+                sheet.clear(f"{col_letter(col0 + n_cols)}{first_data - 1}:{col_letter(col0 + old_cols - 1)}{first_data - 1}")
+            sheet.write(f"{col_letter(col0)}{first_data}", rows)
+            sheet.resize_table(table, len(rows), n_cols)
+            print(f"  таблица «{table.get('name')}»: {len(rows)} строк × {n_cols} колонок (было {old_rows} × {old_cols})")
+        # если таблица менеджеров стоит слишком близко к сводке и сводка выросла — не наш случай, строк всегда ≤ 3
+        return
+    # запасной вариант: без таблиц Google
+    rows = [[title_line()],
+            ["Месяц", "Платные звонки ₽", "Абонентка ₽", "Итого ₽", "1 линия ₽", "1 линия %", "2 линия ₽", "2 линия %",
+             "Прочее ₽", "Прочее %", "Доля звонков 1 / 2 / прочее"]] + s_rows + [[], ["По менеджерам"],
+            ["Месяц", "Номер", "Менеджер", "Отдел", "Звонков", "Минут", "Платных звонков", "Платные ₽"]] + m_rows
+    sheet.clear(OUT_CLEAR)
+    sheet.write(f"{OUT_COL_FROM}{OUT_ANCHOR_ROW}", rows)
+    print(f"  таблиц Google нет — записано блоками: {len(rows)} строк")
+
+
+def col_index(letters):
+    n = 0
+    for ch in letters:
+        n = n * 26 + (ord(ch.upper()) - 64)
+    return n - 1
+
+
+def col_letter(idx):
+    out, i = "", idx + 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        out = chr(65 + r) + out
+    return out
 
 
 def main():
@@ -358,15 +461,15 @@ def main():
     missing = [e for e, (n, d) in staff.items() if not d]
     print(f"Сотрудников в списке: {len(staff)}, без отдела: {missing}")
     results = [compute(y, m, staff) for y, m in months]
-    matrix = build_matrix(results)
+    print("\nСводка:")
+    for r in summary_rows(results):
+        print("  ", r)
     if DRY_RUN:
         print("\n--- DRY_RUN: на лист не пишу ---")
-        for r in matrix[:40]:
-            print(r)
+        print("таблицы на листе:", sheet.tables())
         return
-    sheet.clear(OUT_CLEAR)
-    sheet.write(f"{OUT_COL_FROM}{OUT_ANCHOR_ROW}", matrix)
-    print(f"\nЗаписано на «{TEL_SHEET}» от {OUT_COL_FROM}{OUT_ANCHOR_ROW}: {len(matrix)} строк.")
+    write_sheet(sheet, results)
+    print(f"\nЗаписано на «{TEL_SHEET}».")
 
 
 if __name__ == "__main__":
