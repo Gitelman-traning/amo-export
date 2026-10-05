@@ -14,8 +14,9 @@
 Как считаем:
   1. Звонок BMI ищем в АТС по номеру назначения (последние 10 цифр) и времени (±MATCH_TOLERANCE с).
   2. Платные звонки (цена из BMI) относим на менеджера → отдел.
-  3. Абонентка = акт BMI − сумма платных звонков; делится 50/50 между 1-й и 2-й линией
-     (решение Никиты, 05.10.2026). Звонки без отдела и не найденные в АТС тоже 50/50.
+  3. Абонентка = акт BMI − сумма платных звонков; делится по доле ЗВОНКОВ отдела
+     (решение Никиты, 05.10.2026: 60 % звонков у 1-й линии → 60 % абонентки ей).
+     Не найденные в АТС звонки делятся так же; номер без отдела в списке → прочее.
   4. Итог по отделам и доли, детализация по менеджерам → лист «Телефония расход» от O21.
 
 Запуск: MONTHS=2026-08,2026-09 python telephony_split.py   (по умолчанию — прошлый месяц)
@@ -281,50 +282,48 @@ def compute(y, m, staff):
         if b["price"]:
             a["paid_calls"] += 1
 
-    # по отделам
-    per_dept = {d: {"calls": 0, "sec": 0, "paid": 0.0} for d in DEPTS + ("без отдела", "не сопоставлено")}
+    # по отделам: номер без отдела в списке → прочее (решение Никиты, 05.10)
+    per_dept = {d: {"calls": 0, "sec": 0, "paid": 0.0} for d in DEPTS}
+    unmatched_paid, unmatched_calls = 0.0, 0
     ext_rows = []
     for ext, a in sorted(per_ext.items(), key=lambda kv: -kv[1]["paid"]):
         if ext == "не сопоставлено":
             name, dept = "—", "не сопоставлено"
+            unmatched_paid += a["paid"]
+            unmatched_calls += a["calls"]
         else:
             name, dept = staff.get(ext, ("?", None))
-            dept = dept or "без отдела"
-        per_dept[dept]["calls"] += a["calls"]
-        per_dept[dept]["sec"] += a["sec"]
-        per_dept[dept]["paid"] += a["paid"]
+            dept = dept or "прочее"
+            per_dept[dept]["calls"] += a["calls"]
+            per_dept[dept]["sec"] += a["sec"]
+            per_dept[dept]["paid"] += a["paid"]
         ext_rows.append([label, ext, name, dept, a["calls"], round(a["sec"] / 60), a["paid_calls"], round(a["paid"], 2)])
 
     paid_total = sum(b["price"] for b in bmi_calls)
     subscription = (act_total - paid_total) if act_total is not None else est_subscription
-    # всё, что не привязано к отделу (абонентка, без отдела, не сопоставлено) — 50/50 между линиями
-    pool = (subscription or 0.0) + per_dept["без отдела"]["paid"] + per_dept["не сопоставлено"]["paid"]
-    totals = {}
-    for d in DEPTS:
-        share_pool = pool / 2 if d in LINES else 0.0
-        totals[d] = per_dept[d]["paid"] + share_pool
+    # абонентка и не сопоставленные звонки делятся по доле ЗВОНКОВ отдела (решение Никиты, 05.10):
+    # 60 % звонков у 1-й линии → 60 % абонентки ей
+    pool = (subscription or 0.0) + unmatched_paid
+    calls_known = sum(p["calls"] for p in per_dept.values()) or 1
+    call_share = {d: per_dept[d]["calls"] / calls_known for d in DEPTS}
+    totals = {d: per_dept[d]["paid"] + pool * call_share[d] for d in DEPTS}
     grand = sum(totals.values())
 
-    dept_rows = []
-    for d in DEPTS + ("без отдела", "не сопоставлено"):
-        p = per_dept[d]
-        pool_part = (pool / 2) if d in LINES else ""
-        total = totals.get(d, "")
-        share = round(100 * total / grand, 1) if (d in DEPTS and grand) else ""
-        dept_rows.append([label, d, p["calls"], round(p["sec"] / 60), round(p["paid"], 2),
-                          (round(pool_part, 2) if pool_part != "" else ""),
-                          (round(total, 2) if total != "" else ""), share])
-    dept_rows.append([label, "итого", len(bmi_calls), round(sum(b["sec"] for b in bmi_calls) / 60),
-                      round(paid_total, 2), round(subscription, 2) if subscription is not None else "",
-                      round(grand, 2), 100 if grand else ""])
+    row = {"label": label, "paid": round(paid_total, 2),
+           "subscription": round(subscription, 2) if subscription is not None else "",
+           "total": round(grand, 2)}
+    for d in DEPTS:
+        row[d] = round(totals[d], 2)
+        row[d + "_pct"] = round(100 * totals[d] / grand, 1) if grand else ""
+        row[d + "_calls_pct"] = round(100 * call_share[d], 1)
+    row["note"] = (f"{act_note}; сопоставлено {matched}, не найдено {unmatched} ({unmatched_paid:,.0f} ₽)"
+                   .replace(",", " "))
 
     print(f"платные звонки {paid_total:,.0f} ₽, абонентка {subscription if subscription is not None else '?'}, "
           f"итого {grand:,.0f} ₽".replace(",", " "))
-    for r in dept_rows:
-        print("  ", r[1:], )
-    return {"label": label, "dept_rows": dept_rows, "ext_rows": ext_rows,
-            "act": act_total, "act_note": act_note, "paid": paid_total, "subscription": subscription,
-            "matched": matched, "unmatched": unmatched, "n_bmi": len(bmi_calls), "n_pbx": len(pbx_calls)}
+    print("   доля звонков:", {d: f"{100 * call_share[d]:.1f}%" for d in DEPTS})
+    print("   итог по отделам:", {d: (row[d], row[d + "_pct"]) for d in DEPTS})
+    return {"label": label, "row": row, "ext_rows": ext_rows}
 
 
 # ============================================================
@@ -333,19 +332,17 @@ def compute(y, m, staff):
 
 def build_matrix(results):
     stamp = dt.datetime.now(MSK).strftime("%d.%m.%Y %H:%M")
-    rows = [[f"Телефония по факту: BMI × АТС (обновлено {stamp}). Абонентка = акт BMI − платные звонки, "
-             f"делится 50/50 между линиями; звонки без отдела и не найденные в АТС — тоже 50/50."]]
-    rows.append(["Месяц", "Отдел", "Звонков", "Минут", "Платные звонки ₽", "Доля абонентки и прочего ₽",
-                 "Итого ₽", "Доля, %", "", "Акт BMI ₽", "Сопоставлено / не найдено"])
+    rows = [[f"Телефония по факту: BMI × АТС (обновлено {stamp}). Платные звонки — по цене из BMI на менеджера → отдел; "
+             f"абонентка = акт BMI − платные звонки и делится по доле звонков отдела; номер без отдела → прочее."]]
+    rows.append(["Месяц", "Платные звонки ₽", "Абонентка ₽", "Итого ₽",
+                 "1 линия ₽", "1 линия %", "2 линия ₽", "2 линия %", "Прочее ₽", "Прочее %",
+                 "Доля звонков 1 / 2 / прочее", "Примечание"])
     for res in results:
-        first = True
-        for r in res["dept_rows"]:
-            extra = [""] * 3
-            if first:
-                extra = ["", res["act"] if res["act"] is not None else res["act_note"], f"{res['matched']} / {res['unmatched']}"]
-                first = False
-            rows.append(r + extra)
-        rows.append([])
+        r = res["row"]
+        rows.append([r["label"], r["paid"], r["subscription"], r["total"],
+                     r["1-линия"], r["1-линия_pct"], r["2-линия"], r["2-линия_pct"], r["прочее"], r["прочее_pct"],
+                     f'{r["1-линия_calls_pct"]} / {r["2-линия_calls_pct"]} / {r["прочее_calls_pct"]}', r["note"]])
+    rows.append([])
     rows.append(["По менеджерам"])
     rows.append(["Месяц", "Номер", "Менеджер", "Отдел", "Звонков", "Минут", "Платных звонков", "Платные ₽"])
     for res in results:
