@@ -258,10 +258,9 @@ def read_staff(sheet):
     for row in sheet.get(STAFF_RANGE):
         row = row + [""] * (7 - len(row))
         ext = digits(row[3])
-        if not ext:
-            break                                   # список кончился — ниже другие таблицы
         if len(ext) != 3:
-            continue                                # внутренние номера трёхзначные (100–199)
+            continue                                # внутренние номера трёхзначные; пустые строки и
+                                                    # таблицы ниже (там в колонке D мелкие числа) пропускаем
         name = " ".join(x for x in (row[1].strip(), row[2].strip()) if x)
         staff[ext] = (name, norm_dept(row[5]))
     return staff

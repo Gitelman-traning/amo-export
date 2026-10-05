@@ -96,10 +96,11 @@ DEPT_LABEL = {"1-линия": "1 линия", "2-линия": "2 линия", "�
 #     "1-линия" / "2-линия" / "прочее" → вся сумма на один отдел
 #     "пропустить" → не подаём (AMO платится раз в год)
 # pay   — валюта заявки: RUB или AED (сумма в таблице в ₽ переводится по курсу)
+# fixed — постоянная сумма в ₽: если ячейка месяца пустая, берём её (Телефония KZ всегда 2 500)
 # invoice — (лист, ячейка) с суммой СЧЁТА в валюте заявки; если заполнена, заявки делят её
 #           по долям отделов из блока, а рубли считаются от неё по курсу
 RULES = [
-    {"key": "баланс телефонии kz", "label": "Телефония KZ", "split": "прочее", "pay": "RUB"},
+    {"key": "баланс телефонии kz", "label": "Телефония KZ", "split": "прочее", "pay": "RUB", "fixed": 2500},
     {"key": "баланс телефонии", "label": "Телефония", "split": "прогноз:телефония", "pay": "RUB"},
     {"key": "атс online pbx", "label": "АТС OnlinePBX", "split": "блок:атс", "pay": "RUB"},
     {"key": "wazzupp waba баланс", "label": "Wazzup WABA баланс", "split": "1-линия", "pay": "RUB"},
@@ -526,6 +527,8 @@ def build(src, month, year, rates):
             continue
         if (value is None or value == 0) and rule["split"] == "прогноз:телефония":
             value, cur = 0.0, "RUB"                     # сумму даст прогноз
+        elif (value is None or value == 0) and rule.get("fixed"):
+            value, cur = float(rule["fixed"]), "RUB"    # постоянная сумма
         elif value is None or value == 0:
             pv, _ = parse_money(prev_raw)
             if pv:
