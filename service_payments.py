@@ -526,7 +526,7 @@ def build(src, month, year, rates):
             continue
         if (value is None or value == 0) and rule["split"] == "прогноз:телефония":
             value, cur = 0.0, "RUB"                     # сумму даст прогноз
-        if value is None or value == 0:
+        elif value is None or value == 0:
             pv, _ = parse_money(prev_raw)
             if pv:
                 res.warnings.append(f"«{name}»: в прошлом месяце было {fmt_rub(pv)}, сейчас пусто — проверь.")
