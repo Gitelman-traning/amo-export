@@ -53,6 +53,8 @@ OUT_COL_FROM, OUT_COL_TO = "O", "Y"
 OUT_CLEAR = f"{OUT_COL_FROM}{OUT_ANCHOR_ROW}:{OUT_COL_TO}400"
 
 MATCH_TOLERANCE = 240             # секунд между временем BMI и АТС
+BANK_FEE_CELL = "L31"             # комиссия банка (например «5%») — ложится в прочее от итога по отделам
+BANK_FEE_DEFAULT = 0.05
 BMI_GATEWAY_HINT = "carousel"     # шлюз АТС, через который идут звонки BMI (для статистики)
 LINES = ("1-линия", "2-линия")
 DEPTS = ("1-линия", "2-линия", "прочее")
@@ -224,6 +226,22 @@ class Sheet:
         return new
 
 
+def read_bank_fee(sheet):
+    """Комиссия банка из ячейки BANK_FEE_CELL: «5%» → 0.05, «0,05» → 0.05; пусто → BANK_FEE_DEFAULT."""
+    try:
+        raw = (sheet.get(f"{BANK_FEE_CELL}:{BANK_FEE_CELL}") or [[""]])[0][0]
+    except IndexError:
+        raw = ""
+    txt = str(raw).strip().replace(",", ".").replace(" ", "")
+    if not txt:
+        return BANK_FEE_DEFAULT
+    try:
+        v = float(txt.rstrip("%"))
+    except ValueError:
+        return BANK_FEE_DEFAULT
+    return v / 100 if ("%" in txt or v >= 1) else v
+
+
 def read_staff(sheet):
     """→ {ext: (имя, отдел|None)} из A:G листа «Телефония расход»."""
     staff = {}
@@ -270,7 +288,7 @@ def match(bmi_calls, pbx_calls):
     return matched, unmatched
 
 
-def compute(y, m, staff):
+def compute(y, m, staff, bank_fee):
     first, last = month_bounds(y, m)
     label = f"{MONTHS_RU[m - 1]} {y}"
     print(f"\n===== {label}")
@@ -328,11 +346,13 @@ def compute(y, m, staff):
     calls_known = sum(p["calls"] for p in per_dept.values()) or 1
     call_share = {d: per_dept[d]["calls"] / calls_known for d in DEPTS}
     totals = {d: per_dept[d]["paid"] + pool * call_share[d] for d in DEPTS}
+    commission = sum(totals.values()) * bank_fee            # комиссия банка — в прочее
+    totals["прочее"] += commission
     grand = sum(totals.values())
 
     row = {"label": f"{label} факт", "paid": round(paid_total),
            "subscription": round(subscription) if subscription is not None else "",
-           "total": round(grand)}
+           "total": round(grand), "commission": round(commission), "bank_fee": bank_fee}
     for d in DEPTS:
         row[d] = round(totals[d])
         row[d + "_pct"] = round(100 * totals[d] / grand, 1) if grand else ""
@@ -343,6 +363,7 @@ def compute(y, m, staff):
     print(f"платные звонки {paid_total:,.0f} ₽, абонентка {subscription if subscription is not None else '?'}, "
           f"итого {grand:,.0f} ₽".replace(",", " "))
     print("   доля звонков:", {d: f"{100 * call_share[d]:.1f}%" for d in DEPTS})
+    print(f"   комиссия банка {bank_fee:.1%}: {commission:,.0f} ₽ → прочее".replace(",", " "))
     print("   итог по отделам:", {d: (row[d], row[d + "_pct"]) for d in DEPTS})
     return {"label": label, "row": row, "ext_rows": ext_rows, "y": y, "m": m}
 
@@ -356,8 +377,14 @@ def forecast_row(fact, y, m):
     ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
     row = {"label": f"{MONTHS_RU[nm - 1]} {ny} прогноз",
            "paid": fact["paid"], "subscription": fact["subscription"]}
+    fee = fact.get("bank_fee", BANK_FEE_DEFAULT)
+    base = {d: ceil_1000(fact[d]) for d in LINES}
+    other_base = fact["прочее"] - fact.get("commission", 0)        # прочее без комиссии факта
+    commission = (sum(base.values()) + other_base) * fee
+    row["commission"] = round(commission)
+    row["1-линия"], row["2-линия"] = base["1-линия"], base["2-линия"]
+    row["прочее"] = ceil_1000(other_base + commission)
     for d in DEPTS:
-        row[d] = ceil_1000(fact[d])
         row[d + "_calls_pct"] = fact[d + "_calls_pct"]
     total = sum(row[d] for d in DEPTS)
     row["total"] = total
@@ -401,7 +428,8 @@ def title_line():
     stamp = dt.datetime.now(MSK).strftime("%d.%m.%Y %H:%M")
     return (f"Телефония по факту: BMI × АТС (обновлено {stamp}). Платные звонки — по цене из BMI на менеджера → отдел; "
             f"абонентка = акт BMI − платные звонки (без акта — по тарифу) и делится по доле звонков отдела; "
-            f"номер без отдела → прочее; прогноз = факт последнего месяца, округлённый вверх до 1 000 ₽.")
+            f"номер без отдела → прочее; комиссия банка ({BANK_FEE_CELL}) от итога — в прочее; "
+            f"прогноз = факт последнего месяца, округлённый вверх до 1 000 ₽.")
 
 
 def write_sheet(sheet, results):
@@ -460,7 +488,9 @@ def main():
     staff = read_staff(sheet)
     missing = [e for e, (n, d) in staff.items() if not d]
     print(f"Сотрудников в списке: {len(staff)}, без отдела: {missing}")
-    results = [compute(y, m, staff) for y, m in months]
+    bank_fee = read_bank_fee(sheet)
+    print(f"Комиссия банка ({BANK_FEE_CELL}): {bank_fee:.2%}")
+    results = [compute(y, m, staff, bank_fee) for y, m in months]
     print("\nСводка:")
     for r in summary_rows(results):
         print("  ", r)
