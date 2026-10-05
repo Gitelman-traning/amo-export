@@ -39,6 +39,16 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
+      # Сначала пересчитываем телефонию по факту (строка «прогноз» на листе «Телефония расход»),
+      # затем собираем заявки. При «только ссылки» и «только лог» расчёт пропускаем.
+      - run: python telephony_split.py
+        if: ${{ inputs.only_links != true && inputs.dry_run != true }}
+        env:
+          BMI_API_KEY: ${{ secrets.BMI_API_KEY }}
+          ONLINEPBX_AUTH_KEY: ${{ secrets.ONLINEPBX_AUTH_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SERVICES_SPREADSHEET_ID: ${{ vars.SERVICES_SPREADSHEET_ID }}
+          PAY_MONTH: ${{ inputs.pay_month }}
       - run: python service_payments.py
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}

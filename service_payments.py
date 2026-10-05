@@ -86,7 +86,10 @@ DEPT_LABEL = {"1-линия": "1 линия", "2-линия": "2 линия", "�
 # key   — начало названия в колонке A главного листа (без учёта регистра/пробелов)
 # label — как называть в описании заявки
 # split — как делить между отделами:
-#     "телефония"  → доли из «Телефония расход» K22:K24 (80/20/0), комиссия L31 (5%) → в прочее
+#     "телефония"  → доли из «Телефония расход» K22:K24 (80/20/0), комиссия L31 (5%) → в прочее (старое)
+#     "прогноз:телефония" → строка «<месяц> прогноз» из таблицы расчёта на «Телефония расход» (O21+),
+#                   которую пишет telephony_split.py: суммы по отделам уже с комиссией банка;
+#                   сумма на главном листе не нужна (если стоит и отличается — предупреждение)
 #     "блок:атс"   → блок «Телефония расход» I4:K9
 #     "блок:wazzup"→ блок «Wazzup расход» L4:N25
 #     "блок:zoom"  → блок «Zoom расход» J17:K19
@@ -97,7 +100,7 @@ DEPT_LABEL = {"1-линия": "1 линия", "2-линия": "2 линия", "�
 #           по долям отделов из блока, а рубли считаются от неё по курсу
 RULES = [
     {"key": "баланс телефонии kz", "label": "Телефония KZ", "split": "прочее", "pay": "RUB"},
-    {"key": "баланс телефонии", "label": "Телефония", "split": "телефония", "pay": "RUB"},
+    {"key": "баланс телефонии", "label": "Телефония", "split": "прогноз:телефония", "pay": "RUB"},
     {"key": "атс online pbx", "label": "АТС OnlinePBX", "split": "блок:атс", "pay": "RUB"},
     {"key": "wazzupp waba баланс", "label": "Wazzup WABA баланс", "split": "1-линия", "pay": "RUB"},
     {"key": "wazzupp waba", "label": "Wazzup WABA", "split": "1-линия", "pay": "RUB"},
@@ -450,6 +453,31 @@ def split_telephony(src, total):
     return {"1-линия": d1, "2-линия": d2, "прочее": d3}, note
 
 
+def split_forecast_telephony(src, month, year):
+    """Строка «<месяц> <год> прогноз» из таблицы расчёта telephony_split на листе «Телефония расход».
+    → (parts, total, topup, note) или (None, …), если строки нет."""
+    want = f"{MONTHS_NOM[month - 1]} {year} прогноз"
+    block = src.get(TEL_SHEET, "O21:AB60")
+    header = None
+    for row in block:
+        cells = [str(c).strip() for c in row]
+        if "Месяц" in cells and "1 линия ₽" in cells:
+            header = cells
+            continue
+        if header and cells and cells[0].lower().startswith(want.lower()):
+            idx = {h: i for i, h in enumerate(header)}
+
+            def val(name):
+                i = idx.get(name)
+                v, _ = parse_money(row[i] if i is not None and i < len(row) else "")
+                return v or 0.0
+
+            parts = {"1-линия": val("1 линия ₽"), "2-линия": val("2 линия ₽"), "прочее": val("Прочее ₽")}
+            total, topup = val("Итого ₽"), val("Пополнение BMI ₽")
+            return parts, total, topup, f"прогноз по звонкам, пополнение BMI {fmt_rub(topup)}"
+    return None, None, None, None
+
+
 def split_block(src, sheet, rng, extra_to_other=()):
     """Блок вида [отдел | кол-во | сумма]: суммируем по отделам.
     Строки из extra_to_other (например «Запись звонков») уходят в прочее."""
@@ -496,6 +524,8 @@ def build(src, month, year, rates):
             if value:
                 res.warnings.append(f"«{name}»: {raw.strip()} стоит в таблице, но правило «пропустить» — подай руками, если надо.")
             continue
+        if (value is None or value == 0) and rule["split"] == "прогноз:телефония":
+            value, cur = 0.0, "RUB"                     # сумму даст прогноз
         if value is None or value == 0:
             pv, _ = parse_money(prev_raw)
             if pv:
@@ -512,7 +542,23 @@ def build(src, month, year, rates):
         # делим по отделам
         note = ""
         split = rule["split"]
-        if split == "телефония":
+        if split == "прогноз:телефония":
+            parts, f_total, f_topup, note = split_forecast_telephony(src, month, year)
+            if parts is None:
+                res.warnings.append(f"«{name}»: нет строки «{MONTHS_NOM[month - 1]} {year} прогноз» на «{TEL_SHEET}» — "
+                                    f"запусти расчёт телефонии; пока делю по старому правилу 80/20.")
+                parts, note = split_telephony(src, total_rub or 0)
+                if not total_rub:
+                    res.warnings.append(f"«{name}»: и суммы на главном листе нет — заявки по телефонии не собраны.")
+                    res.summary.pop()
+                    continue
+            else:
+                if total_rub and abs(total_rub - f_total) > 1:
+                    res.warnings.append(f"«{name}»: на главном листе {fmt_rub(total_rub)}, а прогноз даёт {fmt_rub(f_total)} — "
+                                        f"заявки собраны по прогнозу.")
+                total_rub = f_total
+                res.summary[-1] = (rule["label"], f_total, "RUB", f_total)
+        elif split == "телефония":
             parts, note = split_telephony(src, total_rub)
         elif split == "блок:атс":
             parts = split_block(src, TEL_SHEET, "I4:K9", extra_to_other=("запись",))

@@ -99,6 +99,16 @@ def months_from_env():
             y, m = part.strip().split("-")
             out.append((int(y), int(m)))
         return out
+    pay = os.environ.get("PAY_MONTH", "").strip()
+    if pay:                                   # запуск из заявки: два месяца перед месяцем оплаты
+        y, m = (int(x) for x in pay.split("-"))
+        out = []
+        for back in (2, 1):
+            mm, yy = m - back, y
+            while mm <= 0:
+                mm, yy = mm + 12, yy - 1
+            out.append((yy, mm))
+        return out
     today = dt.datetime.now(MSK).date()
     first = today.replace(day=1)
     prev = first - timedelta(days=1)
@@ -291,6 +301,14 @@ def match(bmi_calls, pbx_calls):
 def compute(y, m, staff, bank_fee):
     first, last = month_bounds(y, m)
     label = f"{MONTHS_RU[m - 1]} {y}"
+    yesterday = dt.datetime.now(MSK).date() - timedelta(days=1)
+    scale, partial = 1.0, ""
+    if last > yesterday:                      # месяц не закончился: берём по вчера и дотягиваем по дням
+        days_total, days_have = last.day, max((yesterday - first).days + 1, 1)
+        last = min(last, yesterday)
+        scale = days_total / days_have
+        partial = f" по {yesterday.strftime('%d.%m')}, ×{scale:.2f}"
+        label = f"{label}{partial}"
     print(f"\n===== {label}")
     bmi_calls = fetch_bmi_calls(first, last)
     pbx_calls = fetch_pbx_calls(first, last)
@@ -338,6 +356,14 @@ def compute(y, m, staff, bank_fee):
             per_dept[dept]["paid"] += a["paid"]
         ext_rows.append([label, ext, name, dept, a["calls"], round(a["sec"] / 60), a["paid_calls"], round(a["paid"], 2)])
 
+    if scale != 1.0:                          # экстраполяция неполного месяца
+        for b in bmi_calls:
+            b["price"] *= scale
+        for a in per_ext.values():
+            a["paid"] *= scale
+        for d in per_dept.values():
+            d["paid"] *= scale
+        unmatched_paid *= scale
     paid_total = sum(b["price"] for b in bmi_calls)
     subscription = (act_total - paid_total) if act_total is not None else est_subscription
     # абонентка и не сопоставленные звонки делятся по доле ЗВОНКОВ отдела (решение Никиты, 05.10):
