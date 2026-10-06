@@ -1,0 +1,49 @@
+name: Чистка файлов amoCRM (копии рассылок)
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Только показать, без удаления (true/false)'
+        required: false
+        default: 'true'
+      min_age_hours:
+        description: 'Не трогать файлы моложе стольких часов (по умолчанию 24)'
+        required: false
+        default: ''
+      max_delete:
+        description: 'Предохранитель: не больше стольких файлов за прогон'
+        required: false
+        default: ''
+
+  schedule:
+    # 03:20 МСК — после ночных выгрузок, до начала рабочего дня
+    - cron: '20 0 * * *'
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python drive_cleanup.py
+        env:
+          AMO_TOKEN_CRMOPS: ${{ secrets.AMO_TOKEN_CRMOPS }}
+          AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+          MIN_AGE_HOURS: ${{ inputs.min_age_hours }}
+          MAX_DELETE_PER_RUN: ${{ inputs.max_delete }}
+      - name: Сохранить журнал удалённого
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drive-cleanup-log
+          path: drive_cleanup_*.json
+          if-no-files-found: ignore
+          retention-days: 30
