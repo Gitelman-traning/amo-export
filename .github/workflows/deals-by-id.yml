@@ -33,6 +33,7 @@ jobs:
       - run: python deals_by_id.py
         env:
           AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          AMO_TOKEN_REPORTS: ${{ secrets.AMO_TOKEN_REPORTS }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

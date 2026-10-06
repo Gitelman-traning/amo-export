@@ -33,6 +33,7 @@ jobs:
       - run: python dedup_leads.py
         env:
           AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          AMO_TOKEN_CRMOPS: ${{ secrets.AMO_TOKEN_CRMOPS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DRY_RUN: ${{ inputs.dry_run }}

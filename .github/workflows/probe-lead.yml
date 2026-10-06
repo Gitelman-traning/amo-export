@@ -25,5 +25,6 @@ jobs:
       - run: python probe_lead.py
         env:
           AMO_TOKEN: ${{ secrets.AMO_TOKEN }}
+          AMO_TOKEN_REPORTS: ${{ secrets.AMO_TOKEN_REPORTS }}
           LEAD_ID: ${{ inputs.lead_id }}
           PHONE: ${{ inputs.phone }}

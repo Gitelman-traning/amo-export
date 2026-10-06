@@ -86,7 +86,9 @@ MSK = ZoneInfo(TIMEZONE)
 REQUEST_INTERVAL = 0.2
 
 # ---- Секреты / режим ----
-AMO_TOKEN = os.environ.get("AMO_TOKEN", "").strip()
+# Токен интеграции Team_Training_CrmOps (служебные процессы: правки сделок);
+# AMO_TOKEN — общий запасной вариант, см. DOPPLER.md.
+AMO_TOKEN = (os.environ.get("AMO_TOKEN_CRMOPS") or os.environ.get("AMO_TOKEN", "")).strip()
 if AMO_TOKEN[:7].lower() == "bearer ":
     AMO_TOKEN = AMO_TOKEN[7:].strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
