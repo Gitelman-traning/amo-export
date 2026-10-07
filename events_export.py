@@ -80,7 +80,11 @@ EVENTS_SCOPE = (os.environ.get("EVENTS_SCOPE", "").strip().lower() or "key")
 DEFAULT_AUTHORS = [
     'Евгений Кротов', 'Илья Огнев', 'Камилла Пацкевич', 'Мурад Мурзаев',
     'Русакова Любовь', 'Ткачева Татьяна', 'Узянов Дмитрий',
+    'Александр Брагин',          # добавлен 07.10.2026
 ]
+# Внимание: фильтр по авторам уходит в amo (filter[created_by][]), а там предел
+# 10 значений за запрос. Если список вырастет больше — фильтровать придётся у
+# себя, и объём запросов к amo вырастет втрое.
 _authors_env = os.environ.get("AUTHORS", "").strip()
 AUTHORS = ([] if _authors_env.lower() == 'all'
            else [a.strip() for a in _authors_env.split(',') if a.strip()] or DEFAULT_AUTHORS)
