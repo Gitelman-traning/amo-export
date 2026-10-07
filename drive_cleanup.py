@@ -41,7 +41,7 @@ PAGE = 250
 BATCH = 50               # сколько uuid отправляем в одном DELETE
 REQUEST_INTERVAL = 0.2   # пауза между запросами: лимиты amo, см. DOPPLER.md
 
-AMO_TOKEN = (os.environ.get("AMO_TOKEN_CRMOPS") or os.environ.get("AMO_TOKEN", "")).strip()
+AMO_TOKEN = (os.environ.get("AMO_TOKEN_CRMOPS") or os.environ.get("AMO_TOKEN", "")).strip().lstrip("﻿")
 if AMO_TOKEN[:7].lower() == "bearer ":
     AMO_TOKEN = AMO_TOKEN[7:].strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()

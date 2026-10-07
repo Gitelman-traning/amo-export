@@ -54,7 +54,7 @@ SHEETS_CHUNK = 5000
 
 # Токен интеграции Team_Training_Reports
 # (выгрузки и отчёты); AMO_TOKEN — общий запасной вариант, см. DOPPLER.md.
-AMO_TOKEN = (os.environ.get("AMO_TOKEN_REPORTS") or os.environ.get("AMO_TOKEN", "")).strip()
+AMO_TOKEN = (os.environ.get("AMO_TOKEN_REPORTS") or os.environ.get("AMO_TOKEN", "")).strip().lstrip("﻿")
 if AMO_TOKEN[:7].lower() == "bearer ":
     AMO_TOKEN = AMO_TOKEN[7:].strip()
 GOOGLE_SA_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()

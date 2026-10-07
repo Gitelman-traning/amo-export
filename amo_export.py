@@ -73,7 +73,7 @@ REQUEST_INTERVAL = 0.5       # пауза между запросами к amo, 
 # ---- Секреты: берём из переменных окружения (GitHub Secrets / .env локально) ----
 # Токен интеграции Team_Training_Reports
 # (выгрузки и отчёты); AMO_TOKEN — общий запасной вариант, см. DOPPLER.md.
-AMO_TOKEN = (os.environ.get("AMO_TOKEN_REPORTS") or os.environ.get("AMO_TOKEN", "")).strip()
+AMO_TOKEN = (os.environ.get("AMO_TOKEN_REPORTS") or os.environ.get("AMO_TOKEN", "")).strip().lstrip("﻿")
 # Если токен записали с префиксом "Bearer " — срезаем, его добавит сам скрипт.
 if AMO_TOKEN[:7].lower() == "bearer ":
     AMO_TOKEN = AMO_TOKEN[7:].strip()
