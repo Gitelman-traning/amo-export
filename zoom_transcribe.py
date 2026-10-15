@@ -12,6 +12,10 @@
   5. Создаёт Google Doc с текстом, пишет ссылку на док в «дпд» (upsert по ID).
 
 Запуск по расписанию (внешний триггер cron-job.org → GitHub API), 22:20 МСК.
+
+15.10.2026: расшифровка общая с разбором встречи Штаба (shtab/collector/debrief.py). Перед Apify/Deepgram спрашиваем Штаб
+(/api/transcript по ID сделки) — если днём запись уже расшифровал разбор, док делаем из готового текста. Свою расшифровку
+отдаём в Штаб. Deepgram теперь с разметкой говорящих (diarize) — разбору и ОКК она нужна; в док идёт сплошной текст, как раньше.
 """
 
 import os
@@ -36,7 +40,9 @@ DPD_TAB = "дпд"
 DOCS_FOLDER_ID = "1F_SdcscyOKhXUe79Va65m18d9ScfviVj"   # папка Google Drive для доков
 
 APIFY_TASK = "gyglem~my-actor-1-task"
-DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&language=ru&smart_format=true"
+DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?model=nova-3&language=ru&smart_format=true&diarize=true&utterances=true"
+SHTAB_URL = (os.environ.get("SHTAB_URL") or "https://shtab-20v.pages.dev").rstrip("/")
+SHTAB_TOKEN = os.environ.get("SHTAB_TOKEN", "").strip()
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
@@ -205,8 +211,37 @@ def deepgram_transcribe(path):
                           headers={'Content-Type': 'video/mp4', 'Authorization': f'Token {DEEPGRAM_TOKEN}'},
                           data=f, timeout=1800)
     r.raise_for_status()
-    j = r.json()
-    return j['results']['channels'][0]['alternatives'][0]['transcript']
+    return r.json()
+
+
+def shtab_transcript(deal):
+    """Готовый сплошной текст расшифровки из Штаба (сделал разбор встречи) или None."""
+    if not (SHTAB_TOKEN and str(deal).isdigit()):
+        return None
+    try:
+        r = requests.get(SHTAB_URL + "/api/transcript", params={'deal': deal},
+                         headers={'Authorization': 'Bearer ' + SHTAB_TOKEN}, timeout=60)
+        row = r.json().get('row') if r.ok else None
+        return (row or {}).get('text') or None
+    except Exception as ex:
+        print(f"Штаб недоступен ({type(ex).__name__}) — расшифрую сам")
+        return None
+
+
+def shtab_share(deal, dg, share_url):
+    """Отдать расшифровку в Штаб (сплошной текст + реплики с говорящими) — разбор встречи возьмёт её оттуда."""
+    if not (SHTAB_TOKEN and str(deal).isdigit()):
+        return
+    res = dg.get('results') or {}
+    utt = [[u.get('speaker', 0), round(float(u.get('start', 0)), 1), round(float(u.get('end', 0)), 1), u.get('transcript') or '']
+           for u in res.get('utterances') or []]
+    try:
+        requests.post(SHTAB_URL + "/api/transcript", headers={'Authorization': 'Bearer ' + SHTAB_TOKEN}, timeout=120,
+                      json={'deal': int(deal), 'text': res['channels'][0]['alternatives'][0]['transcript'], 'utt': utt,
+                            'minutes': round(float((dg.get('metadata') or {}).get('duration') or 0) / 60, 1),
+                            'source': 'zoom-transcribe', 'share_url': share_url})
+    except Exception as ex:
+        print(f"расшифровка в Штаб не ушла: {type(ex).__name__}")
 
 
 # ============================================================
@@ -341,11 +376,23 @@ def main():
             except Exception:
                 pass
 
-    ok = fail = 0
+    ok = fail = reused = 0
     for row in pending:
         rid = row['ID']
         audio_path = None
         try:
+            transcript = shtab_transcript(rid)
+            if transcript:
+                print(f"[{rid}] расшифровка уже есть в Штабе (разбор встречи) — Deepgram не зову")
+                doc_id = create_doc(docs, drive, row['amoTag'], transcript)
+                doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                upsert({'ID': row['ID'], 'first_name': row['first_name'],
+                        'zoom_share_url': row['zoom_share_url'], 'zoom_passcode': row['zoom_passcode'],
+                        'transcribation': doc_url})
+                print(f"[{rid}] готово: {doc_url}")
+                ok += 1
+                reused += 1
+                continue
             print(f"[{rid}] запуск Apify...")
             run_id = apify_start(row['share_url'], row['passcode'])
             status = apify_wait(run_id)
@@ -362,7 +409,9 @@ def main():
             print(f"[{rid}] скачиваю аудио...")
             audio_path = download_audio(audio_url, item.get('finalUrl'), item.get('cookieHeader'), row['amoTag'])
             print(f"[{rid}] Deepgram...")
-            transcript = deepgram_transcribe(audio_path)
+            dg = deepgram_transcribe(audio_path)
+            transcript = dg['results']['channels'][0]['alternatives'][0]['transcript']
+            shtab_share(rid, dg, row['share_url'])
             print(f"[{rid}] создаю Google Doc...")
             doc_id = create_doc(docs, drive, row['amoTag'], transcript)
             doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
@@ -381,9 +430,9 @@ def main():
                 except Exception:
                     pass
 
-    print(f"ГОТОВО. Обработано: {ok}, ошибок: {fail} (за прогон {len(pending)}, "
+    print(f"ГОТОВО. Обработано: {ok} (из них готовых из Штаба: {reused}), ошибок: {fail} (за прогон {len(pending)}, "
           f"в очереди {total_pending}, отложено {deferred})")
-    return {'ok': ok, 'fail': fail, 'total': len(pending), 'queue': total_pending, 'deferred': deferred}
+    return {'ok': ok, 'reused': reused, 'fail': fail, 'total': len(pending), 'queue': total_pending, 'deferred': deferred}
 
 
 if __name__ == '__main__':
@@ -393,7 +442,8 @@ if __name__ == '__main__':
             tail = f"\nОсталось на следующий прогон: {s['deferred']}" if s.get('deferred') else ""
             send_telegram(
                 "✅ Транскрибация зумов\n"
-                f"Обработано: {s['ok']}, ошибок: {s['fail']}{tail}"
+                f"Обработано: {s['ok']}" + (f" (из них {s['reused']} — готовая расшифровка из Штаба)" if s.get('reused') else "")
+                + f", ошибок: {s['fail']}{tail}"
                 + run_url_line()
             )
     except Exception as e:

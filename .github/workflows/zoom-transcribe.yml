@@ -30,3 +30,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MAX_PER_RUN: ${{ inputs.limit }}
+          SHTAB_TOKEN: ${{ secrets.SHTAB_TOKEN }}   # общая расшифровка с разбором встречи Штаба
