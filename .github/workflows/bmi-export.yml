@@ -37,3 +37,11 @@ jobs:
           BMI_DATE_TO: ${{ inputs.date_to }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Сторож баланса: предупреждение, если денег меньше чем на 3 дня (см. bmi_balance.py).
+      - name: Баланс телефонии
+        if: ${{ always() }}
+        run: python bmi_balance.py
+        env:
+          BMI_API_KEY: ${{ secrets.BMI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
