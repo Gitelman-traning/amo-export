@@ -32,6 +32,9 @@ def main():
     ov = bmi_get("/billing/overview")
     cur = _currency_code(ov.get("currency")) or ""
     available = num(ov.get("available"))
+    # Кредит BMI — подушка до блокировки, а не наши деньги: тревогу и сумму
+    # пополнения считаем от собственного остатка (он бывает отрицательным).
+    own = num(ov.get("balance"))
 
     # Неделя до вчера включительно: сегодняшние звонки ещё не все посчитаны.
     d_to = today - timedelta(days=1)
@@ -47,7 +50,7 @@ def main():
 
     # Сколько нужно на ближайшие ALERT_DAYS дней (с АП, если она попадает в это окно).
     need = per_day * ALERT_DAYS + (monthly_fee if days_to_fee <= ALERT_DAYS else 0)
-    low = available < need
+    low = own < need
 
     lines = [
         f"Доступно до блокировки: {money(available, cur)} "
@@ -60,7 +63,7 @@ def main():
 
     if low:
         week_need = per_day * 7 + (monthly_fee if days_to_fee <= 7 else 0)
-        topup = max(week_need - available, 0)
+        topup = max(week_need - own, 0)
         send_telegram(
             f"⚠️ Телефония BMI: денег меньше чем на {ALERT_DAYS:g} дн.\n" + "\n".join(lines)
             + f"\nЧтобы хватило на неделю, пополнить на ~{money(topup, cur)}" + run_url_line()
