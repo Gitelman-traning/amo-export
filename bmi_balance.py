@@ -50,7 +50,8 @@ def main():
     low = available < need
 
     lines = [
-        f"Доступно до блокировки: {money(available, cur)}",
+        f"Доступно до блокировки: {money(available, cur)} "
+        f"(остаток {money(ov.get('balance'), cur)} + кредит {money(ov.get('credit_limit'), cur)})",
         f"Расход на звонки: {money(per_day, cur)} в день (за {d_from:%d.%m}–{d_to:%d.%m}: {money(calls_week, cur)})",
         f"Хватит примерно на {days_left:.1f} дн." if days_left != float("inf") else "Платных звонков за неделю не было",
         f"Абонплата {money(monthly_fee, cur)} спишется {next_month:%d.%m} (через {days_to_fee} дн.)",
