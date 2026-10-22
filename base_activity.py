@@ -83,8 +83,18 @@ LEAD_FIELDS = [
     (1442933, 'Оборот (млн ₽)'),
 ]
 
+# Что считаем «действием» менеджера в сделке, когда решаем, чья это сделка.
+ACTION_TYPES = {
+    'lead_status_changed', 'outgoing_call', 'incoming_call', 'common_note_added',
+    'outgoing_chat_message', 'task_added', 'task_completed', 'task_result_added',
+}
+
+# Руководители и служебные учётки: двигают сделки за менеджеров, но сами
+# «менеджером сделки» не становятся — их действия не идут в подсчёт.
+NOT_MANAGERS = {'Тамахина Илона Владимировна', 'Администратор'}
+
 BASE_COLUMNS = [
-    'Воронка', 'ID сделки', 'Сделка', 'Менеджер', 'Перемещений',
+    'Воронка', 'ID сделки', 'Сделка', 'Менеджер', 'Действий менеджера', 'Двигали этапы', 'Перемещений',
     'Первое перемещение', 'Последнее перемещение', 'Маршрут',
     'Текущий этап', 'Ответственный',
 ] + [title for _, title in LEAD_FIELDS] + ['Ссылка']
@@ -237,7 +247,7 @@ def fetch_status_events(ts_from, ts_to, creator_ids):
             'filter[created_at][to]': stop,
         }
         if creator_ids:
-            params['filter[created_by][]'] = list(creator_ids)
+            params['filter[created_by][]'] = list(creator_ids)   # None — все авторы
         url, page = '/api/v4/events', 0
         while url and page < MAX_PAGES:
             data = amo_get(url, params if page == 0 else None)
@@ -299,9 +309,12 @@ def build_rows(events, user_map, pipes):
         # только перемещения ВНУТРИ наших воронок
         if not a_pipe or a_pipe != b_pipe or a_pipe not in PIPELINES:
             continue
-        author = user_map.get(ev.get('created_by'), '')
-        if author not in PIPELINES[a_pipe]['managers']:
+        # С 22.10.2026 (Никита): берём переходы любого живого сотрудника — например,
+        # руководитель отмечает «встреча проведена» за менеджера. Чья это сделка,
+        # решает count_actions: тот, у кого больше всего действий в ней за период.
+        if not ev.get('created_by'):
             continue
+        author = user_map.get(ev.get('created_by'), '') or str(ev.get('created_by'))
         lead_id = ev.get('entity_id')
         rec = by_lead.setdefault(lead_id, {'pipeline_id': a_pipe, 'steps': []})
         names = pipes.get(a_pipe) or {}
@@ -315,6 +328,58 @@ def build_rows(events, user_map, pipes):
     return by_lead
 
 
+def count_actions(lead_ids, ts_from, ts_to, user_map):
+    """lead_id → {сотрудник: число действий} за период (робот не в счёт)."""
+    out = {}
+    ids = list(lead_ids)
+    for i in range(0, len(ids), 10):
+        chunk = ids[i:i + 10]
+        params = {
+            'limit': AMO_PAGE_LIMIT,
+            'filter[entity]': 'lead',
+            'filter[entity_id][]': chunk,
+            'filter[created_at][from]': ts_from,
+            'filter[created_at][to]': ts_to,
+        }
+        url, page = '/api/v4/events', 0
+        while url and page < 50:
+            data = amo_get(url, params if page == 0 else None)
+            evs = (data.get('_embedded') or {}).get('events') or []
+            if not evs:
+                break
+            for ev in evs:
+                if ev.get('type') not in ACTION_TYPES or not ev.get('created_by'):
+                    continue
+                who = user_map.get(ev.get('created_by'), '') or str(ev.get('created_by'))
+                if who in NOT_MANAGERS:
+                    continue
+                per = out.setdefault(ev.get('entity_id'), {})
+                cnt, last = per.get(who, (0, 0))
+                per[who] = (cnt + 1, max(last, ev.get('created_at') or 0))
+            page += 1
+            url = ((data.get('_links') or {}).get('next') or {}).get('href')
+            time.sleep(REQUEST_INTERVAL)
+        if (i // 10) % 20 == 0 and i:
+            print(f"  ...действия посчитаны: {min(i + 10, len(ids))}/{len(ids)} сделок")
+    return out
+
+
+def main_actor(actions, steps):
+    """Кто больше всех действовал в сделке; при равенстве — кто действовал позже."""
+    if not actions:
+        # событий не досталось — тот, кто двигал этапы чаще
+        cnt = {}
+        for s in steps:
+            if s['author'] not in NOT_MANAGERS:
+                cnt[s['author']] = cnt.get(s['author'], 0) + 1
+        if not cnt:                       # двигал только руководитель
+            return steps[-1]['author'], 0
+        who = max(cnt, key=lambda k: cnt[k])
+        return who, cnt[who]
+    who = max(actions, key=lambda k: actions[k])
+    return who, actions[who][0]
+
+
 def format_route(steps, single_author):
     parts = []
     for s in steps:
@@ -323,8 +388,9 @@ def format_route(steps, single_author):
     return '; '.join(parts)
 
 
-def make_matrix(by_lead, leads, user_map, pipes, stage_key):
+def make_matrix(by_lead, leads, user_map, pipes, stage_key, actions_by_lead=None):
     rows = []
+    actions_by_lead = actions_by_lead or {}
     for lead_id, rec in by_lead.items():
         steps = rec['steps']
         authors = []
@@ -334,11 +400,14 @@ def make_matrix(by_lead, leads, user_map, pipes, stage_key):
         lead = leads.get(lead_id) or {}
         cur_pipe = lead.get('pipeline_id')
         cur_status = (pipes.get(cur_pipe) or {}).get(lead.get('status_id'), '')
+        manager, n_actions = main_actor(actions_by_lead.get(lead_id), steps)
         row = {
             'Воронка': PIPELINES[rec['pipeline_id']]['name'],
             'ID сделки': lead_id,
             'Сделка': lead.get('name') or '',
-            'Менеджер': ', '.join(authors),
+            'Менеджер': manager,
+            'Действий менеджера': n_actions,
+            'Двигали этапы': ', '.join(authors),
             'Перемещений': len(steps),
             'Первое перемещение': fmt_dt(steps[0]['ts'], with_year=True),
             'Последнее перемещение': fmt_dt(steps[-1]['ts'], with_year=True),
@@ -438,14 +507,14 @@ def main():
     missing = wanted_names - {user_map[uid] for uid in creator_ids}
     if missing:
         print(f"ВНИМАНИЕ: не нашёл в amo пользователей: {', '.join(sorted(missing))}")
-    print(f"Менеджеров в фильтре: {len(creator_ids)}")
+    print(f"Менеджеров воронок найдено: {len(creator_ids)}")
 
     pipes, order = fetch_pipelines()
     stage_cols, stage_key = stage_columns(order, pipes)
     columns = BASE_COLUMNS + stage_cols
     print(f"Колонок: {len(columns)} (из них этапов — {len(stage_cols)})")
     print("Качаю события смены этапа...")
-    events = fetch_status_events(ts_from, ts_to, creator_ids)
+    events = fetch_status_events(ts_from, ts_to, None)
     print(f"Событий смены этапа получено: {len(events)}")
 
     by_lead = build_rows(events, user_map, pipes)
@@ -453,19 +522,32 @@ def main():
     print(f"Подходящих сделок: {len(by_lead)}, перемещений: {moves}")
 
     leads = fetch_leads_by_ids(by_lead.keys()) if by_lead else {}
-    rows = make_matrix(by_lead, leads, user_map, pipes, stage_key)
+    print("Считаю действия в сделках (кто больше работал — тот менеджер)...")
+    actions = count_actions(by_lead.keys(), ts_from, ts_to, user_map) if by_lead else {}
+    # Сделка остаётся в отчёте, только если в ней работал кто-то из менеджеров
+    # этой воронки (двигал этапы или звонил/писал) — чужие сделки не тащим.
+    for lead_id in list(by_lead):
+        listed = PIPELINES[by_lead[lead_id]['pipeline_id']]['managers']
+        people = set(actions.get(lead_id, {})) | {st['author'] for st in by_lead[lead_id]['steps']}
+        if not people & set(listed):
+            del by_lead[lead_id]
+    moves = sum(len(r['steps']) for r in by_lead.values())
+    print(f"После отбора по менеджерам воронок: сделок {len(by_lead)}, перемещений {moves}")
+    rows = make_matrix(by_lead, leads, user_map, pipes, stage_key, actions)
 
     # сводка по менеджерам — в лог и в Telegram
     per_manager = {}
-    for rec in by_lead.values():
-        for s in rec['steps']:
-            per_manager[s['author']] = per_manager.get(s['author'], 0) + 1
+    for r in rows:
+        per_manager[r['Менеджер']] = per_manager.get(r['Менеджер'], 0) + r['Перемещений']
     summary = '\n'.join(f"{n} - {c}" for n, c in
                         sorted(per_manager.items(), key=lambda x: -x[1]))
     print("\nПеремещений по менеджерам:\n" + (summary or '  нет'))
 
     if DRY_RUN:
         print("\nDRY_RUN — в таблицу не пишу.")
+        if os.environ.get('DRY_DUMP'):
+            with open(os.environ['DRY_DUMP'], 'w', encoding='utf-8') as f:
+                json.dump(rows, f, ensure_ascii=False)
         for r in rows[:10]:
             print(f"  {r['Воронка']} | {r['ID сделки']} | {r['Менеджер']} | "
                   f"{r['Перемещений']} | {r['Маршрут'][:90]}")
