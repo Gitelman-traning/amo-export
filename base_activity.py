@@ -83,18 +83,12 @@ LEAD_FIELDS = [
     (1442933, 'Оборот (млн ₽)'),
 ]
 
-# Что считаем «действием» менеджера в сделке, когда решаем, чья это сделка.
-ACTION_TYPES = {
-    'lead_status_changed', 'outgoing_call', 'incoming_call', 'common_note_added',
-    'outgoing_chat_message', 'task_added', 'task_completed', 'task_result_added',
-}
-
 # Руководители и служебные учётки: двигают сделки за менеджеров, но сами
 # «менеджером сделки» не становятся — их действия не идут в подсчёт.
 NOT_MANAGERS = {'Тамахина Илона Владимировна', 'Администратор'}
 
 BASE_COLUMNS = [
-    'Воронка', 'ID сделки', 'Сделка', 'Менеджер', 'Действий менеджера', 'Двигали этапы', 'Перемещений',
+    'Воронка', 'ID сделки', 'Сделка', 'Менеджер', 'Перемещений менеджера', 'Двигали этапы', 'Перемещений',
     'Первое перемещение', 'Последнее перемещение', 'Маршрут',
     'Текущий этап', 'Ответственный',
 ] + [title for _, title in LEAD_FIELDS] + ['Ссылка']
@@ -311,7 +305,7 @@ def build_rows(events, user_map, pipes):
             continue
         # С 22.10.2026 (Никита): берём переходы любого живого сотрудника — например,
         # руководитель отмечает «встреча проведена» за менеджера. Чья это сделка,
-        # решает count_actions: тот, у кого больше всего действий в ней за период.
+        # решает main_actor: тот, кто больше всех двигал её по этапам этой воронки.
         if not ev.get('created_by'):
             continue
         author = user_map.get(ev.get('created_by'), '') or str(ev.get('created_by'))
@@ -328,56 +322,21 @@ def build_rows(events, user_map, pipes):
     return by_lead
 
 
-def count_actions(lead_ids, ts_from, ts_to, user_map):
-    """lead_id → {сотрудник: число действий} за период (робот не в счёт)."""
-    out = {}
-    ids = list(lead_ids)
-    for i in range(0, len(ids), 10):
-        chunk = ids[i:i + 10]
-        params = {
-            'limit': AMO_PAGE_LIMIT,
-            'filter[entity]': 'lead',
-            'filter[entity_id][]': chunk,
-            'filter[created_at][from]': ts_from,
-            'filter[created_at][to]': ts_to,
-        }
-        url, page = '/api/v4/events', 0
-        while url and page < 50:
-            data = amo_get(url, params if page == 0 else None)
-            evs = (data.get('_embedded') or {}).get('events') or []
-            if not evs:
-                break
-            for ev in evs:
-                if ev.get('type') not in ACTION_TYPES or not ev.get('created_by'):
-                    continue
-                who = user_map.get(ev.get('created_by'), '') or str(ev.get('created_by'))
-                if who in NOT_MANAGERS:
-                    continue
-                per = out.setdefault(ev.get('entity_id'), {})
-                cnt, last = per.get(who, (0, 0))
-                per[who] = (cnt + 1, max(last, ev.get('created_at') or 0))
-            page += 1
-            url = ((data.get('_links') or {}).get('next') or {}).get('href')
-            time.sleep(REQUEST_INTERVAL)
-        if (i // 10) % 20 == 0 and i:
-            print(f"  ...действия посчитаны: {min(i + 10, len(ids))}/{len(ids)} сделок")
-    return out
-
-
-def main_actor(actions, steps):
-    """Кто больше всех действовал в сделке; при равенстве — кто действовал позже."""
-    if not actions:
-        # событий не досталось — тот, кто двигал этапы чаще
-        cnt = {}
-        for s in steps:
-            if s['author'] not in NOT_MANAGERS:
-                cnt[s['author']] = cnt.get(s['author'], 0) + 1
-        if not cnt:                       # двигал только руководитель
-            return steps[-1]['author'], 0
-        who = max(cnt, key=lambda k: cnt[k])
-        return who, cnt[who]
-    who = max(actions, key=lambda k: actions[k])
-    return who, actions[who][0]
+def main_actor(steps):
+    """Менеджер сделки — кто больше всех двигал её по этапам в воронке (Никита,
+    22.10.2026). Руководители и служебные учётки (NOT_MANAGERS) не в счёт: их
+    переходы видны в маршруте, но сделку они не забирают. При равенстве — кто
+    двигал позже."""
+    cnt, last = {}, {}
+    for s in steps:
+        if s['author'] in NOT_MANAGERS:
+            continue
+        cnt[s['author']] = cnt.get(s['author'], 0) + 1
+        last[s['author']] = s['ts'] or 0
+    if not cnt:                       # двигал только руководитель
+        return steps[-1]['author'], 0
+    who = max(cnt, key=lambda k: (cnt[k], last[k]))
+    return who, cnt[who]
 
 
 def format_route(steps, single_author):
@@ -388,9 +347,8 @@ def format_route(steps, single_author):
     return '; '.join(parts)
 
 
-def make_matrix(by_lead, leads, user_map, pipes, stage_key, actions_by_lead=None):
+def make_matrix(by_lead, leads, user_map, pipes, stage_key):
     rows = []
-    actions_by_lead = actions_by_lead or {}
     for lead_id, rec in by_lead.items():
         steps = rec['steps']
         authors = []
@@ -400,13 +358,13 @@ def make_matrix(by_lead, leads, user_map, pipes, stage_key, actions_by_lead=None
         lead = leads.get(lead_id) or {}
         cur_pipe = lead.get('pipeline_id')
         cur_status = (pipes.get(cur_pipe) or {}).get(lead.get('status_id'), '')
-        manager, n_actions = main_actor(actions_by_lead.get(lead_id), steps)
+        manager, n_moves = main_actor(steps)
         row = {
             'Воронка': PIPELINES[rec['pipeline_id']]['name'],
             'ID сделки': lead_id,
             'Сделка': lead.get('name') or '',
             'Менеджер': manager,
-            'Действий менеджера': n_actions,
+            'Перемещений менеджера': n_moves,
             'Двигали этапы': ', '.join(authors),
             'Перемещений': len(steps),
             'Первое перемещение': fmt_dt(steps[0]['ts'], with_year=True),
@@ -522,18 +480,16 @@ def main():
     print(f"Подходящих сделок: {len(by_lead)}, перемещений: {moves}")
 
     leads = fetch_leads_by_ids(by_lead.keys()) if by_lead else {}
-    print("Считаю действия в сделках (кто больше работал — тот менеджер)...")
-    actions = count_actions(by_lead.keys(), ts_from, ts_to, user_map) if by_lead else {}
-    # Сделка остаётся в отчёте, только если в ней работал кто-то из менеджеров
-    # этой воронки (двигал этапы или звонил/писал) — чужие сделки не тащим.
+    # Сделка остаётся в отчёте, только если её двигал кто-то из менеджеров
+    # этой воронки — чужие сделки не тащим.
     for lead_id in list(by_lead):
         listed = PIPELINES[by_lead[lead_id]['pipeline_id']]['managers']
-        people = set(actions.get(lead_id, {})) | {st['author'] for st in by_lead[lead_id]['steps']}
+        people = {st['author'] for st in by_lead[lead_id]['steps']}
         if not people & set(listed):
             del by_lead[lead_id]
     moves = sum(len(r['steps']) for r in by_lead.values())
     print(f"После отбора по менеджерам воронок: сделок {len(by_lead)}, перемещений {moves}")
-    rows = make_matrix(by_lead, leads, user_map, pipes, stage_key, actions)
+    rows = make_matrix(by_lead, leads, user_map, pipes, stage_key)
 
     # сводка по менеджерам — в лог и в Telegram
     per_manager = {}
