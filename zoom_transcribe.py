@@ -205,6 +205,19 @@ def download_audio(url, referer, cookie, filename):
     return tmp.name
 
 
+def deepgram_ok():
+    """Перед Apify: полсекунды тишины в Deepgram (доли копейки). 402 — баланса нет: не тратим Apify на записи, которые не расшифруются."""
+    import io as _io, wave as _wave
+    buf = _io.BytesIO()
+    w = _wave.open(buf, 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000); w.writeframes(bytes(8000)); w.close()
+    try:
+        r = requests.post("https://api.deepgram.com/v1/listen?model=nova-3&language=ru",
+                          headers={'Content-Type': 'audio/wav', 'Authorization': f'Token {DEEPGRAM_TOKEN}'}, data=buf.getvalue(), timeout=60)
+    except requests.RequestException:
+        return True
+    return r.status_code != 402
+
+
 def deepgram_transcribe(path):
     with open(path, 'rb') as f:
         r = requests.post(DEEPGRAM_URL,
@@ -377,6 +390,9 @@ def main():
                 pass
 
     ok = fail = reused = 0
+    nofunds = not deepgram_ok()      # 23.10.2026: с 17.10 Deepgram отвечал 402, а Apify каждую ночь качал записи впустую
+    if nofunds:
+        print("Deepgram: нет баланса (402) — расшифровку не запускаю, беру только готовые из Штаба")
     for row in pending:
         rid = row['ID']
         audio_path = None
@@ -392,6 +408,9 @@ def main():
                 print(f"[{rid}] готово: {doc_url}")
                 ok += 1
                 reused += 1
+                continue
+            if nofunds:
+                fail += 1
                 continue
             print(f"[{rid}] запуск Apify...")
             run_id = apify_start(row['share_url'], row['passcode'])
@@ -432,12 +451,15 @@ def main():
 
     print(f"ГОТОВО. Обработано: {ok} (из них готовых из Штаба: {reused}), ошибок: {fail} (за прогон {len(pending)}, "
           f"в очереди {total_pending}, отложено {deferred})")
-    return {'ok': ok, 'reused': reused, 'fail': fail, 'total': len(pending), 'queue': total_pending, 'deferred': deferred}
+    return {'ok': ok, 'reused': reused, 'fail': fail, 'nofunds': nofunds, 'total': len(pending), 'queue': total_pending, 'deferred': deferred}
 
 
 if __name__ == '__main__':
     try:
         s = main()
+        if s.get('nofunds'):
+            send_telegram("⚠️ Транскрибация зумов: на Deepgram нет денег (402) — записи не расшифрованы, в очереди "
+                          f"{s.get('queue', 0)}. Пополните Deepgram (аккаунт gitelmanteam@gmail.com)." + run_url_line())
         if s['total'] > 0:
             tail = f"\nОсталось на следующий прогон: {s['deferred']}" if s.get('deferred') else ""
             send_telegram(
