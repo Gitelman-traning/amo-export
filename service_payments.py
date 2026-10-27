@@ -556,11 +556,15 @@ def build(src, month, year, rates):
                     res.summary.pop()
                     continue
             else:
-                if total_rub and abs(total_rub - f_total) > 1:
-                    res.warnings.append(f"«{name}»: на главном листе {fmt_rub(total_rub)}, а прогноз даёт {fmt_rub(f_total)} — "
-                                        f"заявки собраны по прогнозу.")
-                total_rub = f_total
-                res.summary[-1] = (rule["label"], f_total, "RUB", f_total)
+                if total_rub and f_total and abs(total_rub - f_total) > 1:
+                    # сумма вписана руками — она главная, прогноз даёт только доли отделов
+                    parts = {d: total_rub * parts[d] / f_total for d in DEPTS}
+                    note = f"сумма с главного листа, доли по прогнозу {fmt_rub(f_total)}"
+                    res.warnings.append(f"«{name}»: подаём {fmt_rub(total_rub)} с главного листа, прогноз по звонкам {fmt_rub(f_total)} "
+                                        f"(пополнение BMI {fmt_rub(f_topup)}); доли отделов взяты из прогноза.")
+                else:
+                    total_rub = f_total
+                res.summary[-1] = (rule["label"], total_rub, "RUB", total_rub)
         elif split == "телефония":
             parts, note = split_telephony(src, total_rub)
         elif split == "блок:атс":
@@ -595,6 +599,12 @@ def build(src, month, year, rates):
         if rule.get("invoice"):
             inv_sheet, inv_cell = rule["invoice"]
             invoice_total, _ = parse_money(src.get(inv_sheet, f"{inv_cell}:{inv_cell}")[0][0])
+            if invoice_total and pay_cur != "RUB" and invoice_total > 15000:
+                # похоже на рубли, а не на валюту счёта — переводим по курсу и предупреждаем
+                res.warnings.append(f"«{name}»: в {inv_sheet}!{inv_cell} стоит {fmt_rub(invoice_total)} — это рубли, "
+                                    f"а не {pay_cur}; перевёл по курсу {rate:.2f}: {invoice_total / rate:,.2f} {pay_cur}. "
+                                    f"Впиши сумму счёта в {pay_cur}, если есть.".replace(",", " "))
+                invoice_total = round(invoice_total / rate, 2)
             if invoice_total:
                 note = (note + "; " if note else "") + f"по счёту {invoice_total:,.2f} {pay_cur}".replace(",", " ")
                 res.summary[-1] = (rule["label"], invoice_total * rate, pay_cur, invoice_total)
