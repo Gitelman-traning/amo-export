@@ -103,7 +103,8 @@ RULES = [
     {"key": "баланс телефонии kz", "label": "Телефония KZ", "split": "прочее", "pay": "RUB", "fixed": 2500},
     {"key": "баланс телефонии", "label": "Телефония", "split": "прогноз:телефония", "pay": "RUB"},
     {"key": "атс online pbx", "label": "АТС OnlinePBX", "split": "блок:атс", "pay": "RUB"},
-    {"key": "wazzupp waba баланс", "label": "Wazzup WABA баланс", "split": "1-линия", "pay": "RUB"},
+    # баланс WABA идёт в том же счёте Wazzup (AED), поэтому заявка в дирхамах; отдел — 1-линия
+    {"key": "wazzupp waba баланс", "label": "Wazzup WABA баланс", "split": "1-линия", "pay": "AED"},
     {"key": "wazzupp waba", "label": "Wazzup WABA", "split": "1-линия", "pay": "RUB"},
     {"key": "wazzupp whatsupp", "label": "Wazzup", "split": "блок:wazzup", "pay": "AED",
      "invoice": (WAZ_SHEET, "R17")},   # «счёт AED» — сумма счёта с НДС; заполнена → делим её, а не рубли
