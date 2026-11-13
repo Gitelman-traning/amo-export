@@ -339,6 +339,15 @@ try {
   const page = await context.newPage();
   page.setDefaultNavigationTimeout(180_000);
   page.setDefaultTimeout(60_000);
+  page.on('pageerror', (error) => log.warning(`PAGE_JS_ERROR: ${String(error.message).slice(0, 300)}`));
+  page.on('requestfailed', (request) => {
+    try {
+      const url = new URL(request.url());
+      if (url.hostname.endsWith('zoom.us') && /\.js$/i.test(url.pathname)) {
+        log.warning(`JS_REQUEST_FAILED: ${url.hostname}${url.pathname}: ${request.failure()?.errorText}`);
+      }
+    } catch {}
+  });
 
   const blockHosts = [
     'googletagmanager',
@@ -459,8 +468,10 @@ try {
   }
 
   if (stateInfo.state === 'unknown') {
-    await page.waitForTimeout(5000);
-    stateInfo = await detectPageState(page);
+    for (let poll = 0; stateInfo.state === 'unknown' && poll < 30; poll++) {
+      await page.waitForTimeout(1000);
+      stateInfo = await detectPageState(page);
+    }
     log.info(
       `PAGE_STATE_RECHECK=${stateInfo.state}, url=${stateInfo.currentUrl}, title=${JSON.stringify(stateInfo.title)}, snippet=${JSON.stringify((stateInfo.bodyText || '').slice(0, 300))}`
     );
