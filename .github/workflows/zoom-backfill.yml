@@ -1,0 +1,41 @@
+name: Восстановление пропущенных расшифровок Zoom
+
+on:
+  workflow_dispatch:
+    inputs:
+      deals:
+        description: 'ID сделок через запятую (до 200); готовые ссылки пропускаются'
+        required: true
+        type: string
+
+# Share the normal workflow lock: only one Google Sheets writer at a time.
+concurrency:
+  group: zoom-transcribe
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -u zoom_backfill.py
+        env:
+          BACKFILL_DEALS: ${{ inputs.deals }}
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          DEEPGRAM_TOKEN: ${{ secrets.DEEPGRAM_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+          SHTAB_TOKEN: ${{ secrets.SHTAB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zoom-backfill-results
+          path: zoom-backfill-results.json
+          if-no-files-found: warn
