@@ -51,6 +51,7 @@ MAX_POLLS = 30          # максимум опросов на одну запи
 MAX_PER_RUN = int(os.environ.get("MAX_PER_RUN") or "21")  # максимум записей за прогон (≈2 дневные нормы);
                         # берём НОВЕЙШИЕ по «Дата Диагностика проведена», старый бэклог не грызём.
                         # Можно переопределить через ручной запуск (поле limit) для теста.
+ONLY_DEAL = os.environ.get("ONLY_DEAL", "").strip()  # точечная проверка/восстановление, пусто = обычная очередь
 
 # ---- Секреты из окружения ----
 APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "").strip()
@@ -306,6 +307,8 @@ def create_doc(docs, drive, title, text):
 # ============================================================
 
 def main():
+    if ONLY_DEAL and not ONLY_DEAL.isdigit():
+        raise ValueError("ONLY_DEAL должен содержать числовой ID сделки")
     missing = [n for n, v in [('APIFY_TOKEN', APIFY_TOKEN), ('DEEPGRAM_TOKEN', DEEPGRAM_TOKEN),
                               ('GOOGLE_SERVICE_ACCOUNT_JSON', GOOGLE_SA_JSON),
                               ('GOOGLE_OAUTH_CLIENT_ID', GOOGLE_OAUTH_CLIENT_ID),
@@ -340,6 +343,8 @@ def main():
     pending = []
     for zr in zoom_rows:
         rid = str(zr.get('ID') or '').strip()
+        if ONLY_DEAL and rid != ONLY_DEAL:
+            continue
         parsed = parse_row(zr)
         if not parsed:
             continue

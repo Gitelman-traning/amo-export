@@ -8,6 +8,14 @@ on:
         description: 'Лимит записей за прогон (пусто = 21). Для теста поставь 1-2.'
         required: false
         default: ''
+      deal:
+        description: 'Только ID одной сделки для проверки/восстановления. Пусто = обычная очередь.'
+        required: false
+        default: ''
+
+concurrency:
+  group: zoom-transcribe
+  cancel-in-progress: false
 
 jobs:
   transcribe:
@@ -30,4 +38,5 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MAX_PER_RUN: ${{ inputs.limit }}
+          ONLY_DEAL: ${{ inputs.deal }}
           SHTAB_TOKEN: ${{ secrets.SHTAB_TOKEN }}   # общая расшифровка с разбором встречи Штаба

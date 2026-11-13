@@ -1,0 +1,11 @@
+{
+  "type": "module",
+  "dependencies": {
+    "apify": "^3.4.4",
+    "playwright": "^1.54.2"
+  },
+  "scripts": {
+    "postinstall": "npx playwright install chromium",
+    "start": "node --trace-uncaught src/main.js"
+  }
+}

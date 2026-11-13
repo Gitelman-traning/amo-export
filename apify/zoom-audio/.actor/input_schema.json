@@ -1,0 +1,22 @@
+{
+  "title": "Zoom share input",
+  "description": "Provide a Zoom share link and optional passcode to extract the audio URL.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "shareUrl": {
+      "title": "Zoom share URL",
+      "type": "string",
+      "description": "Полная ссылка вида https://us06web.zoom.us/rec/share/...",
+      "editor": "textfield"
+    },
+    "passcode": {
+      "title": "Passcode (без ?)",
+      "type": "string",
+      "description": "Если страница просит пароль — укажи его здесь, без начального знака ?",
+      "editor": "textfield",
+      "default": ""
+    }
+  },
+  "required": ["shareUrl"]
+}

@@ -1,5 +1,7 @@
 .env
 *.json
+!apify/zoom-audio/package.json
+!apify/zoom-audio/.actor/*.json
 !*.example
 __pycache__/
 *.pyc
