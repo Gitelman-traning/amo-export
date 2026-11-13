@@ -22,9 +22,10 @@ export async function selectAudioOnly(page, log) {
   const checkboxes = tree.getByRole('checkbox');
   for (let i = 0; i < await checkboxes.count(); i++) {
     const checkbox = checkboxes.nth(i);
-    if (await checkbox.isChecked()) await checkbox.uncheck({ timeout: 5000 });
+    // Zoom renders a decorative knob on top of the native input.
+    if (await checkbox.isChecked()) await checkbox.uncheck({ timeout: 5000, force: true });
   }
-  await audio.check({ timeout: 5000 });
+  await audio.check({ timeout: 5000, force: true });
   let checked = 0;
   for (let i = 0; i < await checkboxes.count(); i++) {
     if (await checkboxes.nth(i).isChecked()) checked++;

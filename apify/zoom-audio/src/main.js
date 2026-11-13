@@ -712,8 +712,9 @@ try {
     collectDownloadsAfterSingleClick(),
     60_000,
     'COLLECT_BULK_DOWNLOADS'
-  ).catch((e) => {
+  ).catch(async (e) => {
     log.warning(`collectDownloads timeout/error: ${String(e)}`);
+    await saveDebugPage(page, 'debug_audio_download');
     return [];
   });
 
